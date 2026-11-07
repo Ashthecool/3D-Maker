@@ -22,6 +22,6 @@ A Google Colab Pro tool: prompt → Anima Turbo v1.1 (ComfyUI) → BiRefNet + TR
 - Local Blender: `C:\Program Files\Blender Foundation\Blender 4.5\blender.exe`
 
 ## Tools
-- MCP `colab-mcp` (`.mcp.json`): drives a Colab tab in the owner's browser. Call `open_colab_browser_connection` first.
+- MCP `colab-mcp` (`.mcp.json`): drives a Colab tab in the owner's browser. Call `open_colab_browser_connection` first. It runs through `scripts/colab_mcp_launcher.py`, which opens the notebook named in the git-ignored `.colab-notebook` file instead of a blank one. The MCP session binds to the first tab that connects, so don't move the token to another tab; restart the server instead.
 - MCP `blender`: blender-mcp. Needs Blender open with the addon's server started.
 - Work is tracked in GitHub issues and the "3D-Maker Roadmap" project. Reference issue numbers in commits (`Fixes #N`).

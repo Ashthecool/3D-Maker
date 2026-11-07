@@ -29,3 +29,6 @@ jobs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local Colab notebook that colab-mcp opens (scripts/colab_mcp_launcher.py)
+.colab-notebook

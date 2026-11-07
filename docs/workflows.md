@@ -15,5 +15,6 @@ To export one as JSON for the ComfyUI UI:
 ```python
 import json
 from maker3d.workflows import trellis2_i2m
+
 print(json.dumps(trellis2_i2m("input.png", seed=1), indent=2))
 ```

@@ -1,8 +1,12 @@
 {
   "mcpServers": {
     "colab-mcp": {
-      "command": "uvx",
-      "args": ["git+https://github.com/googlecolab/colab-mcp"],
+      "command": "uv",
+      "args": [
+        "run", "--no-project", "--python", "3.13",
+        "--with", "git+https://github.com/googlecolab/colab-mcp",
+        "python", "scripts/colab_mcp_launcher.py"
+      ],
       "timeout": 600000
     },
     "blender": {
