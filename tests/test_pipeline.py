@@ -238,10 +238,13 @@ def test_toon_settings_match_the_blender_script(tmp_path):
     for key in ("style", "bands", "outline", "res", "samples", "frames", "background"):
         assert getattr(args, key) == getattr(defaults, key), key
     assert args.source_image == image and args.source_mask is None  # mask file is missing
+    assert not args.no_color_match
     flat = pl.ToonSettings(outline=0, turntable=False, transparent=True, projection=False)
     args = toon_scene.parse_args(flat.to_args(Path("m.glb"), Path("o"), image, mask))
     assert args.no_outline and args.no_turntable and args.transparent
     assert args.source_image is None
+    raw = pl.ToonSettings(color_match=False).to_args(Path("m.glb"), Path("o"), image)
+    assert toon_scene.parse_args(raw).no_color_match
 
 
 def test_waits_for_kernel_warmup(make_pipe, tmp_path):

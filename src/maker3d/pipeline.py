@@ -68,6 +68,7 @@ class ToonSettings:
     background: str = "#ffffff"
     transparent: bool = False
     projection: bool = True  # put the crisp Anima image on front-facing surfaces
+    color_match: bool = True  # recolour TRELLIS.2's darker texture to the image (#24)
 
     def to_args(
         self, glb: Path, out: Path, image: Path | None = None, mask: Path | None = None
@@ -85,6 +86,8 @@ class ToonSettings:
             args += ["--source-image", str(image)]
             if mask is not None and mask.is_file():
                 args += ["--source-mask", str(mask)]
+            if not self.color_match:
+                args.append("--no-color-match")
         return args
 
 

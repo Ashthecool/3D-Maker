@@ -95,6 +95,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="the front image TRELLIS.2 got; projected onto front-facing surfaces",
     )
     p.add_argument("--source-mask", type=Path, help="background-removal mask of --source-image")
+    p.add_argument(
+        "--no-color-match",
+        action="store_true",
+        help="keep TRELLIS.2's own (darker) texture colours away from the front",
+    )
     return p.parse_args(argv)
 
 
@@ -192,6 +197,173 @@ def smoothstep(e0: float, e1: float, x):
     return t * t * (3.0 - 2.0 * t)
 
 
+# --------------------------------------------------------------------------------------
+# Colour match (issue #24), numpy only. TRELLIS.2's own texture is much darker and flatter
+# than the Anima image (silver hair comes out dark grey, with noisy smudges), so the sides
+# and back did not match the projected front. Every vertex gets the source-image colour of
+# front-visible points that are nearby in x/z *and* had a similar TRELLIS colour.
+# --------------------------------------------------------------------------------------
+def srgb_to_linear(c):
+    import numpy as np
+
+    c = np.asarray(c, dtype=np.float64)
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+def bilinear(img, x, y):
+    """Sample an (H, W, C) image at float pixel coordinates (pixel centres at integers)."""
+    import numpy as np
+
+    h, w = img.shape[:2]
+    x = np.clip(np.asarray(x, np.float64), 0, w - 1)
+    y = np.clip(np.asarray(y, np.float64), 0, h - 1)
+    x0, y0 = np.floor(x).astype(int), np.floor(y).astype(int)
+    x1, y1 = np.minimum(x0 + 1, w - 1), np.minimum(y0 + 1, h - 1)
+    fx, fy = (x - x0)[:, None], (y - y0)[:, None]
+    top = img[y0, x0] * (1 - fx) + img[y0, x1] * fx
+    bottom = img[y1, x0] * (1 - fx) + img[y1, x1] * fx
+    return top * (1 - fy) + bottom * fy
+
+
+def median_sample(img, x, y, radius: int = 2):
+    """Per-channel median of the (2r+1)^2 pixels around each point; drops thin ink lines."""
+    import numpy as np
+
+    h, w = img.shape[:2]
+    xi, yi = np.round(x).astype(int), np.round(y).astype(int)
+    offs = np.arange(-radius, radius + 1)
+    xs = np.clip(xi[:, None, None] + offs[None, None, :], 0, w - 1)
+    ys = np.clip(yi[:, None, None] + offs[None, :, None], 0, h - 1)
+    patch = img[ys, xs].reshape(len(xi), -1, img.shape[2])
+    return np.median(patch, axis=1)
+
+
+def smooth_vertex_values(values, edges, iterations: int = 3):
+    """Average each vertex with its edge neighbours ``iterations`` times (denoises colours)."""
+    import numpy as np
+
+    values = np.asarray(values, dtype=np.float64)
+    edges = np.asarray(edges, dtype=np.int64).reshape(-1, 2)
+    degree = np.bincount(edges.ravel(), minlength=len(values)).astype(np.float64)[:, None]
+    for _ in range(iterations):
+        total = values.copy()
+        np.add.at(total, edges[:, 0], values[edges[:, 1]])
+        np.add.at(total, edges[:, 1], values[edges[:, 0]])
+        values = total / (degree + 1.0)
+    return values
+
+
+def color_guide(rgb):
+    """Matching features for a colour: brightness and two opponent-colour axes."""
+    import numpy as np
+
+    rgb = np.asarray(rgb, dtype=np.float64)
+    r, g, b = rgb[:, 0], rgb[:, 1], rgb[:, 2]
+    return np.stack([rgb.mean(axis=1), r - g, b - 0.5 * (r + g)], axis=1)
+
+
+def _blur_axis(a, axis: int, sigma: float):
+    """Gaussian blur along one axis (zero outside), unnormalised: blur sums and counts alike."""
+    import numpy as np
+
+    n = a.shape[axis]
+    if sigma <= 0 or n == 1:
+        return a
+    r = math.ceil(2.5 * sigma)
+    a = np.moveaxis(a, axis, 0)
+    out = np.zeros_like(a)
+    for o in range(-min(r, n - 1), min(r, n - 1) + 1):
+        k = math.exp(-0.5 * (o / sigma) ** 2)
+        if o >= 0:
+            out[: n - o] += k * a[o:]
+        else:
+            out[-o:] += k * a[: n + o]
+    return np.moveaxis(out, 0, axis)
+
+
+def grid_regress(feat, values, query, bins, sigma):
+    """Bilateral-grid regression: the local mean of ``values`` around each ``query`` point.
+
+    ``feat`` (N, D) and ``query`` (M, D) are scaled to [0, 1]; ``bins`` and ``sigma`` (in
+    cells) are per dimension. Returns ``(mean (M, C), weight (M,))``, where weight is the
+    blurred number of samples near the query (low = little evidence).
+    """
+    import itertools
+
+    import numpy as np
+
+    bins = np.asarray(bins, dtype=int)
+    size = int(np.prod(bins))
+    values = np.asarray(values, dtype=np.float64)
+    cells = np.clip((np.asarray(feat) * bins).astype(int), 0, bins - 1)
+    flat = np.ravel_multi_index(cells.T, bins)
+    cols = [np.bincount(flat, weights=values[:, c], minlength=size) for c in range(values.shape[1])]
+    cols.append(np.bincount(flat, minlength=size).astype(np.float64))
+    grid = np.stack(cols, axis=-1).reshape(*bins, -1)
+    for axis, s in enumerate(sigma):
+        grid = _blur_axis(grid, axis, s)
+    grid = grid.reshape(size, -1)
+    # Multilinear lookup between cell centres, so results have no blocky steps.
+    pos = np.asarray(query, dtype=np.float64) * bins - 0.5
+    i0 = np.floor(pos).astype(int)
+    f = pos - i0
+    acc = np.zeros((len(pos), grid.shape[1]))
+    for corner in itertools.product((0, 1), repeat=len(bins)):
+        c = np.array(corner)
+        w = np.prod(np.where(c == 1, f, 1 - f), axis=1)
+        acc += w[:, None] * grid[np.ravel_multi_index(np.clip(i0 + c, 0, bins - 1).T, bins)]
+    weight = acc[:, -1]
+    return acc[:, :-1] / np.maximum(weight, 1e-9)[:, None], weight
+
+
+def match_colors(
+    src_xz,
+    src_guide,
+    src_rgb,
+    xz,
+    guide,
+    cell: float = 1 / 40,
+    color_bins=(12, 8, 8),
+    min_weight: float = 2.0,
+):
+    """Source-image colour for every point, from its x/z position and TRELLIS colour.
+
+    ``src_*``: front-visible points with a known source colour. ``guide`` values come from
+    ``color_guide``. Predictions go coarse to fine: colour only (whole model), then
+    position + colour with a wide and a narrow spatial blur; each finer level takes over
+    where it has enough samples (``min_weight``). ``cell`` is the spatial cell size as a
+    fraction of the model height.
+    """
+    import numpy as np
+
+    src_xz, xz = np.asarray(src_xz, np.float64), np.asarray(xz, np.float64)
+    src_rgb = np.asarray(src_rgb, np.float64)
+    both = np.concatenate([src_xz, xz])
+    lo, size = both.min(axis=0), np.ptp(both, axis=0)
+    unit = max(float(size[1]), 1e-9) * cell  # cell edge in world units
+    sbins = tuple(int(math.ceil(s / unit)) + 1 for s in size)
+
+    def spatial(p):
+        return (p - lo) / (np.array(sbins) * unit)
+
+    g_all = np.concatenate([src_guide, guide])
+    g_lo, g_hi = np.percentile(g_all, 0.5, axis=0), np.percentile(g_all, 99.5, axis=0)
+
+    def colour(g):
+        return np.clip((g - g_lo) / np.maximum(g_hi - g_lo, 1e-6), 0.0, 1.0 - 1e-9)
+
+    gs, gq = colour(np.asarray(src_guide)), colour(np.asarray(guide))
+    pred, w = grid_regress(gs, src_rgb, gq, color_bins, (1.0, 1.0, 1.0))
+    a = (w / (w + min_weight))[:, None]
+    pred = a * pred + (1 - a) * src_rgb.mean(axis=0)
+    fs, fq = np.c_[spatial(src_xz), gs], np.c_[spatial(xz), gq]
+    for s in (3.0, 1.0):
+        p, w = grid_regress(fs, src_rgb, fq, sbins + tuple(color_bins), (s, s, 1.0, 1.0, 1.0))
+        a = (w / (w + min_weight))[:, None]
+        pred = a * p + (1 - a) * pred
+    return np.clip(pred, 0.0, 1.0)
+
+
 def hex_to_rgb(value: str) -> tuple[float, float, float]:
     value = value.lstrip("#")
     if len(value) != 6:
@@ -220,13 +392,19 @@ def main(argv: list[str]) -> None:
     meshes = [o for o in scene.objects if o.type == "MESH"]
     if not meshes:
         raise SystemExit(f"no meshes in {args.glb}")
-    proj_image = None
+    proj_image, color_matched = None, False
     if args.source_image:
         rotate_yaw = math.radians(args.yaw)
         for o in [o for o in scene.objects if o.parent is None]:
             o.rotation_euler.z += rotate_yaw  # project in the pose the camera sees at yaw
         bpy.context.view_layer.update()
-        proj_image = add_front_projection(bpy, meshes, args.source_image, args.source_mask)
+        proj_image, color_matched = add_front_projection(
+            bpy,
+            meshes,
+            args.source_image,
+            args.source_mask,
+            color_match=not args.no_color_match,
+        )
         for o in [o for o in scene.objects if o.parent is None]:
             o.rotation_euler.z -= rotate_yaw
         bpy.context.view_layer.update()
@@ -253,7 +431,7 @@ def main(argv: list[str]) -> None:
     for mat in {s.material for o in meshes for s in o.material_slots if s.material}:
         make_toon_material(bpy, mat, toon_group)
         if proj_image is not None:
-            insert_projection(bpy, mat, proj_image)
+            insert_projection(bpy, mat, proj_image, vertex_color=color_matched)
     if not args.no_outline:
         outline_mat = build_outline_material(bpy)
         thickness = outline_thickness(height, args.outline)
@@ -491,14 +669,17 @@ def add_front_projection(
     mask_path=None,
     facing=(0.2, 0.55),
     erode_px: int = 3,
+    color_match: bool = True,
 ):
     """Project the source image onto the front of ``meshes`` (current world transforms).
 
     TRELLIS.2 generates its own texture, which blurs small details such as eyes. The
     character faces the camera in the source image, so for surfaces that face the front
     and are not hidden behind other geometry, the original pixels are better. Adds a
-    ``front_proj`` UV map and a ``front_weight`` point attribute to each mesh, and returns
-    a packed RGBA image (alpha = eroded mask) for ``insert_projection``.
+    ``front_proj`` UV map and a ``front_weight`` point attribute to each mesh, and (with
+    ``color_match``) a ``toon_color`` attribute for everywhere else. Returns a packed RGBA
+    image (alpha = eroded mask) and whether ``toon_color`` was written, for
+    ``insert_projection``.
     """
     import numpy as np
     from mathutils import Vector
@@ -552,6 +733,7 @@ def add_front_projection(
     eps = 1e-3 * height
     toward_camera = Vector((0.0, -1.0, 0.0))  # the camera looks along +Y from -Y
 
+    items = []
     for o, wco, wno, _ in parts:
         me = o.data
         px, py = s * wco[:, 0] + ox, s * wco[:, 2] + oy
@@ -581,18 +763,108 @@ def add_front_projection(
         print(
             f"[toon] {o.name}: {int((weight > 0).sum())} vertices use the source image", flush=True
         )
+        items.append((o, wco, weight, px, py))
 
+    matched = add_color_match(items, rgba) if color_match else False
     proj = bpy.data.images.new("FrontProjection", w, h, alpha=True)
     out = rgba.copy()
     out[..., 3] = inner.astype(np.float32)
     proj.pixels.foreach_set(out.ravel())
     proj.alpha_mode = "STRAIGHT"
     proj.pack()
-    return proj
+    return proj, matched
 
 
-def insert_projection(bpy, mat, proj_image) -> bool:
-    """Blend ``proj_image`` (via ``front_proj`` UVs) into the colour feeding ToonShade."""
+def base_color_image(mat):
+    """The image texture feeding a material's Principled Base Color (glTF import layout)."""
+    nt = mat.node_tree if mat is not None else None
+    bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None) if nt else None
+    if bsdf is None or not bsdf.inputs["Base Color"].is_linked:
+        return None
+    node = bsdf.inputs["Base Color"].links[0].from_node
+    for _ in range(3):  # e.g. a Mix node in between when baseColorFactor != 1
+        if node.type == "TEX_IMAGE":
+            return node.image
+        linked = [i for i in node.inputs if i.is_linked]
+        if not linked:
+            return None
+        node = linked[0].links[0].from_node
+    return None
+
+
+def vertex_texture_colors(me, image, down: int = 2):
+    """Mean texture colour at each vertex (raw pixel values, i.e. sRGB-encoded)."""
+    import numpy as np
+
+    w, h = image.size
+    px = np.empty(w * h * 4, np.float32)
+    image.pixels.foreach_get(px)
+    tex = px.reshape(h, w, 4)[..., :3]
+    if down > 1 and min(w, h) >= 4 * down:  # average down a little: less texture noise
+        tex = tex[: h - h % down, : w - w % down]
+        tex = tex.reshape(h // down, down, w // down, down, 3).mean(axis=(1, 3))
+    th, tw = tex.shape[:2]
+    layer = next((uv for uv in me.uv_layers if uv.active_render), None) or me.uv_layers.active
+    uv = np.empty(len(me.loops) * 2, np.float32)
+    layer.data.foreach_get("uv", uv)
+    uv = uv.reshape(-1, 2) % 1.0
+    samples = bilinear(tex, uv[:, 0] * tw - 0.5, uv[:, 1] * th - 0.5)
+    loop_v = np.empty(len(me.loops), np.int32)
+    me.loops.foreach_get("vertex_index", loop_v)
+    n = len(me.vertices)
+    count = np.maximum(np.bincount(loop_v, minlength=n), 1)
+    sums = [np.bincount(loop_v, weights=samples[:, c], minlength=n) for c in range(3)]
+    return np.stack(sums, axis=1) / count[:, None]
+
+
+def add_color_match(items, rgba, min_samples: int = 500) -> bool:
+    """Write a ``toon_color`` vertex colour: the TRELLIS texture recoloured to the source.
+
+    ``items``: (object, world coords, front weight, pixel x, pixel y) per mesh, from
+    ``add_front_projection``. Returns False (and changes nothing) when it cannot run.
+    """
+    import numpy as np
+
+    guides = []
+    for o, *_ in items:
+        mats = {s.material for s in o.material_slots if s.material}
+        image = base_color_image(next(iter(mats))) if len(mats) == 1 else None
+        if image is None or image.size[0] == 0:
+            print(f"[toon] colour match skipped: {o.name} has no single base texture", flush=True)
+            return False
+        colours = vertex_texture_colors(o.data, image)
+        edges = np.empty(len(o.data.edges) * 2, np.int64)
+        o.data.edges.foreach_get("vertices", edges)
+        guides.append(smooth_vertex_values(colours, edges))
+    guide = color_guide(np.concatenate(guides))
+    xz = np.concatenate([it[1][:, [0, 2]] for it in items])
+    front = np.concatenate([it[2] for it in items]) > 0.9
+    if front.sum() < min_samples:
+        print(f"[toon] colour match skipped: only {int(front.sum())} front samples", flush=True)
+        return False
+    px = np.concatenate([it[3] for it in items])[front]
+    py = np.concatenate([it[4] for it in items])[front]
+    src = median_sample(rgba[..., :3], px, py)
+    pred = match_colors(xz[front], guide[front], src, xz, guide)
+    linear = np.c_[srgb_to_linear(pred), np.ones(len(pred))].astype(np.float32)
+    start = 0
+    for o, wco, *_ in items:
+        me, n = o.data, len(wco)
+        attr = me.attributes.get("toon_color") or me.attributes.new(
+            "toon_color", "FLOAT_COLOR", "POINT"
+        )
+        attr.data.foreach_set("color", linear[start : start + n].ravel())
+        start += n
+    print(f"[toon] colour match: {int(front.sum())} front samples -> {start} vertices", flush=True)
+    return True
+
+
+def insert_projection(bpy, mat, proj_image, vertex_color: bool = False) -> bool:
+    """Blend ``proj_image`` (via ``front_proj`` UVs) into the colour feeding ToonShade.
+
+    ``vertex_color``: use the colour-matched ``toon_color`` attribute instead of the
+    TRELLIS texture underneath the projection.
+    """
     nt = mat.node_tree
     grp = next(
         (
@@ -630,7 +902,14 @@ def insert_projection(bpy, mat, proj_image) -> bool:
     nt.links.new(attr.outputs["Fac"], fac.inputs[0])
     nt.links.new(tex.outputs["Alpha"], fac.inputs[1])
     nt.links.new(fac.outputs["Value"], mix.inputs["Factor"])
-    if base is not None:
+    if vertex_color:
+        matched = nt.nodes.new("ShaderNodeAttribute")
+        matched.attribute_type = "GEOMETRY"
+        matched.attribute_name = "toon_color"
+        matched.label = "Colour-matched TRELLIS texture"
+        matched.location = (x - 700, y + 50)
+        nt.links.new(matched.outputs["Color"], mix.inputs["A"])
+    elif base is not None:
         nt.links.new(base, mix.inputs["A"])
     else:
         mix.inputs["A"].default_value = tuple(sock.default_value)
