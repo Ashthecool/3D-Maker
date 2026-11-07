@@ -15,14 +15,14 @@ Type a prompt, get an anime character as a **3D model that looks 2D**.
 | 2. 3D | **BiRefNet** background removal + **TRELLIS.2** (native ComfyUI nodes) | textured `model.glb` |
 | 3. 2D look | **Blender 4.5 LTS** headless: cel bands, ink outlines, flat colours, turntable on twos | stills, `turntable.mp4`, `toon.blend` |
 
-Everything runs on a single Colab GPU (L4 recommended). Results are saved to
+Everything runs on a single Colab GPU (A100 recommended; L4 is the cheaper option). Results are saved to
 `MyDrive/3D-Maker/jobs/<timestamp>/`. Open `toon.blend` in Blender 4.5 on your own PC to
 pose, tweak and re-render in EEVEE.
 
 ## Use it (once v1 is done)
 
 1. Click **Open in Colab** above.
-2. Runtime → Change runtime type → **L4 GPU**.
+2. Runtime → Change runtime type → **A100 GPU** (or **L4 GPU** to spend fewer compute units).
 3. Runtime → Run all, then open the Gradio link that appears.
 
 ## Licenses

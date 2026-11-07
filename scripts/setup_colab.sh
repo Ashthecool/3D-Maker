@@ -24,7 +24,7 @@ step "GPU"
 if command -v nvidia-smi >/dev/null 2>&1; then
   nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 else
-  echo "WARNING: no GPU attached (Runtime > Change runtime type > L4 GPU)."
+  echo "WARNING: no GPU attached (Runtime > Change runtime type > A100 GPU)."
 fi
 
 step "3D-Maker package"
