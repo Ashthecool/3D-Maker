@@ -13,7 +13,7 @@ dependencies = [
 # Installed on Colab only.
 colab = [
     "gradio>=5.0",
-    "huggingface_hub[hf_transfer]>=0.34",
+    "huggingface_hub>=0.34",
 ]
 
 [dependency-groups]

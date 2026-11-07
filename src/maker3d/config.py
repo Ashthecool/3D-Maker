@@ -1,7 +1,7 @@
 """Central configuration: model files, folders and generation defaults.
 
-Model paths marked ``verified=False`` come from docs and still need checking
-on Colab (issue #4).
+``verified=True`` means the file was confirmed in the Hugging Face repo listing
+(2026-11-07). Whether each one loads in the pinned ComfyUI is checked in issue #4.
 """
 
 from __future__ import annotations
@@ -55,14 +55,31 @@ TRELLIS2_MODELS: tuple[ModelFile, ...] = (
         "Comfy-Org/TRELLIS.2",
         "diffusion_models/trellis_2_int8_convrot.safetensors",
         "diffusion_models",
+        verified=True,
     ),
-    ModelFile("Comfy-Org/TRELLIS.2", "vae/trellis_2_shape_vae_bf16.safetensors", "vae"),
-    ModelFile("Comfy-Org/TRELLIS.2", "vae/trellis_2_texture_vae_bf16.safetensors", "vae"),
-    ModelFile("Comfy-Org/TRELLIS.2", "clip_vision/dino_v3_vit_l.safetensors", "clip_vision"),
+    ModelFile(
+        "Comfy-Org/TRELLIS.2",
+        "vae/trellis_2_shape_vae_bf16.safetensors",
+        "vae",
+        verified=True,
+    ),
+    ModelFile(
+        "Comfy-Org/TRELLIS.2",
+        "vae/trellis_2_texture_vae_bf16.safetensors",
+        "vae",
+        verified=True,
+    ),
+    ModelFile(
+        "Comfy-Org/TRELLIS.2",
+        "clip_vision/dino_v3_vit_l.safetensors",
+        "clip_vision",
+        verified=True,
+    ),
     ModelFile(
         "Comfy-Org/BiRefNet",
         "background_removal/birefnet.safetensors",
         "background_removal",
+        verified=True,
     ),
 )
 
@@ -72,8 +89,14 @@ ALL_MODELS: tuple[ModelFile, ...] = ANIMA_MODELS + TRELLIS2_MODELS
 COMFYUI_DIR = "/content/ComfyUI"
 COMFYUI_URL = "http://127.0.0.1:8188"
 COMFYUI_MIN_VERSION = "0.34.0"  # first release with native TRELLIS.2 nodes
+COMFYUI_REPO = "https://github.com/Comfy-Org/ComfyUI"
+COMFYUI_REF = "v0.44.0"  # pinned release (2026-11-04)
 DRIVE_JOBS_DIR = "/content/drive/MyDrive/3D-Maker/jobs"
 BLENDER_VERSION = "4.5.10"
+BLENDER_DIR = f"/content/blender-{BLENDER_VERSION}-linux-x64"
+BLENDER_URL = (
+    f"https://download.blender.org/release/Blender4.5/blender-{BLENDER_VERSION}-linux-x64.tar.xz"
+)
 
 
 @dataclass(frozen=True)
