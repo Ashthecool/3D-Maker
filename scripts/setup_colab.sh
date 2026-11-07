@@ -4,6 +4,7 @@
 # Installs: ComfyUI (pinned release), this package, model files, Blender 4.5 LTS.
 # Safe to re-run: every step skips work that is already done.
 set -euo pipefail
+export PYTHONUNBUFFERED=1  # live log lines when the output is piped
 
 SKIP_MODELS=0
 SKIP_BLENDER=0
