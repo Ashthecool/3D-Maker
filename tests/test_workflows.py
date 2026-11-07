@@ -13,7 +13,7 @@ OUTPUTS = {
     "Trellis2TextureStage": 3, "VaeDecodeTextureTrellis": 1, "RemeshMesh": 1,
     "DecimateMesh": 1, "MeshSmoothNormals": 1, "UnwrapMesh": 1, "BakeTextureFromVoxel": 3,
     "BakeNormalMapFromMesh": 1, "BakeAmbientOcclusion": 1, "ApplyTextureToMesh": 1,
-    "SaveGLB": 0,
+    "SaveGLB": 0, "MaskToImage": 1,
 }  # fmt: skip
 
 
@@ -54,6 +54,7 @@ def test_trellis2_graph_is_valid(remove_bg):
     _check_graph(wf)
     types = [n["class_type"] for n in wf.values()]
     assert ("RemoveBackground" in types) is remove_bg
+    assert any(n.get("_meta", {}).get("title") == "mask" for n in wf.values()) is remove_bg
     assert types.count("KSampler") == 4
     assert types[-1] == "SaveGLB"
     assert _by_title(wf, "image")["inputs"]["image"] == "char.png"

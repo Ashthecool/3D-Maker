@@ -120,6 +120,9 @@ def trellis2_i2m(
     if s.remove_background:
         bg_model = g.add("LoadBackgroundRemovalModel", bg_removal_name="birefnet.safetensors")
         mask = out(g.add("RemoveBackground", bg_removal_model=out(bg_model), image=out(image)))
+        # Saved for the Blender front projection (toon_scene.py --source-mask).
+        mask_img = g.add("MaskToImage", mask=mask)
+        g.add("SaveImage", "mask", images=out(mask_img), filename_prefix=f"{filename_prefix}_mask")
     else:
         mask = out(image, 1)  # the PNG's own alpha channel
     crop = g.add(

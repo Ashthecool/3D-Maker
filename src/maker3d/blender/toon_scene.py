@@ -89,7 +89,107 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--background", default="#ffffff")
     p.add_argument("--engine", choices=("CYCLES", "EEVEE"), default="CYCLES")
     p.add_argument("--cpu", action="store_true", help="render Cycles on the CPU")
+    p.add_argument(
+        "--source-image",
+        type=Path,
+        help="the front image TRELLIS.2 got; projected onto front-facing surfaces",
+    )
+    p.add_argument("--source-mask", type=Path, help="background-removal mask of --source-image")
     return p.parse_args(argv)
+
+
+# --------------------------------------------------------------------------------------
+# Front projection helpers (numpy only, no bpy). Image arrays use Blender's row order:
+# row 0 is the BOTTOM of the picture, so pixel y grows upwards like world Z.
+# --------------------------------------------------------------------------------------
+def erode(mask, px: int):
+    """Binary erosion with a 4-neighbourhood, ``px`` times."""
+    m = mask.astype(bool)
+    for _ in range(max(px, 0)):
+        e = m.copy()
+        e[1:, :] &= m[:-1, :]
+        e[:-1, :] &= m[1:, :]
+        e[:, 1:] &= m[:, :-1]
+        e[:, :-1] &= m[:, 1:]
+        m = e
+    return m
+
+
+def dilate(mask, px: int):
+    return ~erode(~mask.astype(bool), px)
+
+
+def splat(px_x, px_y, shape):
+    """Boolean image with a True pixel under every point (points outside are dropped)."""
+    import numpy as np
+
+    h, w = shape
+    img = np.zeros(shape, bool)
+    xi, yi = np.round(px_x).astype(int), np.round(px_y).astype(int)
+    ok = (xi >= 0) & (xi < w) & (yi >= 0) & (yi < h)
+    img[yi[ok], xi[ok]] = True
+    return img
+
+
+def background_mask(rgba, thresh: float = 0.94):
+    """Foreground mask for a picture on a white background: near-white pixels that are
+    connected to the border are background. Fallback when no segmentation mask is given."""
+    import numpy as np
+
+    cand = rgba[..., :3].min(axis=2) > thresh
+    bg = np.zeros_like(cand)
+    for sl in (np.s_[0, :], np.s_[-1, :], np.s_[:, 0], np.s_[:, -1]):
+        bg[sl] = cand[sl]
+    while True:
+        grown = dilate(bg, 1) & cand
+        if (grown == bg).all():
+            return ~bg
+        bg = grown
+
+
+def fit_projection(xz, mask, down: int = 4, scales=None, shift: int = 6):
+    """Fit ``pixel = s * (x, z) + (ox, oy)`` so the mesh's front silhouette matches ``mask``.
+
+    ``xz``: (N, 2) mesh vertex positions seen from the front (x right, z up).
+    Starts from the bounding boxes (uniform scale from the height), then searches scale and
+    shift for the best silhouette IoU on a ``down``-times smaller grid.
+    Returns ``(s, ox, oy, iou)`` in full-resolution pixels.
+    """
+    import numpy as np
+
+    if scales is None:
+        scales = np.linspace(0.94, 1.06, 13)
+    rows = np.flatnonzero(mask.any(axis=1))
+    cols = np.flatnonzero(mask.any(axis=0))
+    if rows.size == 0:
+        raise ValueError("empty mask")
+    x, z = xz[:, 0], xz[:, 1]
+    s0 = (rows[-1] - rows[0] + 1) / max(float(z.max() - z.min()), 1e-9)
+    cx_img, cy_img = (cols[0] + cols[-1]) / 2, (rows[0] + rows[-1]) / 2
+    cx_mesh, cz_mesh = (x.min() + x.max()) / 2, (z.min() + z.max()) / 2
+    small = mask[::down, ::down].astype(bool)
+    best = (-1.0, s0, cx_img - s0 * cx_mesh, cy_img - s0 * cz_mesh)
+    for k in scales:
+        s = s0 * k
+        ox, oy = cx_img - s * cx_mesh, cy_img - s * cz_mesh
+        # closing (dilate then erode) fills gaps between points without growing the outline
+        sil = erode(dilate(splat((s * x + ox) / down, (s * z + oy) / down, small.shape), 1), 1)
+        for dy in range(-shift, shift + 1):
+            for dx in range(-shift, shift + 1):
+                moved = np.roll(sil, (dy, dx), axis=(0, 1))
+                union = (moved | small).sum()
+                iou = (moved & small).sum() / union if union else 0.0
+                if iou > best[0]:
+                    best = (iou, s, ox + dx * down, oy + dy * down)
+    iou, s, ox, oy = best
+    return s, ox, oy, float(iou)
+
+
+def smoothstep(e0: float, e1: float, x):
+    import numpy as np
+
+    t = np.clip((x - e0) / (e1 - e0), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
 
 
 def hex_to_rgb(value: str) -> tuple[float, float, float]:
@@ -120,6 +220,16 @@ def main(argv: list[str]) -> None:
     meshes = [o for o in scene.objects if o.type == "MESH"]
     if not meshes:
         raise SystemExit(f"no meshes in {args.glb}")
+    proj_image = None
+    if args.source_image:
+        rotate_yaw = math.radians(args.yaw)
+        for o in [o for o in scene.objects if o.parent is None]:
+            o.rotation_euler.z += rotate_yaw  # project in the pose the camera sees at yaw
+        bpy.context.view_layer.update()
+        proj_image = add_front_projection(bpy, meshes, args.source_image, args.source_mask)
+        for o in [o for o in scene.objects if o.parent is None]:
+            o.rotation_euler.z -= rotate_yaw
+        bpy.context.view_layer.update()
 
     # Pivot empty: everything rotates around the model's vertical axis.
     corners = [o.matrix_world @ Vector(c) for o in meshes for c in o.bound_box]
@@ -142,6 +252,8 @@ def main(argv: list[str]) -> None:
     toon_group = build_toon_group(bpy, args.style, args.bands)
     for mat in {s.material for o in meshes for s in o.material_slots if s.material}:
         make_toon_material(bpy, mat, toon_group)
+        if proj_image is not None:
+            insert_projection(bpy, mat, proj_image)
     if not args.no_outline:
         outline_mat = build_outline_material(bpy)
         thickness = outline_thickness(height, args.outline)
@@ -370,6 +482,161 @@ def add_outline(obj, outline_mat, thickness: float) -> None:
     mod.use_quality_normals = True
     mod.thickness_clamp = 1.0
     mod.material_offset = len(obj.data.materials) - 1
+
+
+def add_front_projection(
+    bpy,
+    meshes,
+    image_path,
+    mask_path=None,
+    facing=(0.2, 0.55),
+    erode_px: int = 3,
+):
+    """Project the source image onto the front of ``meshes`` (current world transforms).
+
+    TRELLIS.2 generates its own texture, which blurs small details such as eyes. The
+    character faces the camera in the source image, so for surfaces that face the front
+    and are not hidden behind other geometry, the original pixels are better. Adds a
+    ``front_proj`` UV map and a ``front_weight`` point attribute to each mesh, and returns
+    a packed RGBA image (alpha = eroded mask) for ``insert_projection``.
+    """
+    import numpy as np
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+
+    src = bpy.data.images.load(str(image_path), check_existing=True)
+    w, h = src.size
+    rgba = np.empty(w * h * 4, np.float32)
+    src.pixels.foreach_get(rgba)
+    rgba = rgba.reshape(h, w, 4)
+    if mask_path:
+        mimg = bpy.data.images.load(str(mask_path), check_existing=True)
+        if tuple(mimg.size) != (w, h):
+            raise ValueError(f"mask size {tuple(mimg.size)} != image size {(w, h)}")
+        mpx = np.empty(w * h * 4, np.float32)
+        mimg.pixels.foreach_get(mpx)
+        mask = mpx.reshape(h, w, 4)[..., 0] > 0.5
+    else:
+        mask = background_mask(rgba)
+    inner = erode(mask, erode_px)
+
+    # World-space geometry of all meshes, for fitting and occlusion rays.
+    parts = []
+    for o in meshes:
+        me = o.data
+        n = len(me.vertices)
+        co = np.empty(n * 3, np.float32)
+        me.vertices.foreach_get("co", co)
+        no = np.empty(n * 3, np.float32)
+        me.vertices.foreach_get("normal", no)
+        m = np.array(o.matrix_world, dtype=np.float64)
+        rot = m[:3, :3]
+        wco = co.reshape(n, 3) @ rot.T + m[:3, 3]
+        wno = no.reshape(n, 3) @ np.linalg.inv(rot)  # inverse-transpose for normals
+        wno /= np.linalg.norm(wno, axis=1, keepdims=True) + 1e-12
+        me.calc_loop_triangles()
+        tris = np.empty(len(me.loop_triangles) * 3, np.int32)
+        me.loop_triangles.foreach_get("vertices", tris)
+        parts.append((o, wco, wno, tris.reshape(-1, 3)))
+
+    all_co = np.concatenate([p[1] for p in parts])
+    s, ox, oy, iou = fit_projection(all_co[:, [0, 2]], mask)
+    print(f"[toon] front projection fit: IoU {iou:.3f}", flush=True)
+
+    tri_offset, all_tris = 0, []
+    for _, wco, _, tris in parts:
+        all_tris.append(tris + tri_offset)
+        tri_offset += len(wco)
+    bvh = BVHTree.FromPolygons(all_co.tolist(), np.concatenate(all_tris).tolist())
+    height = float(all_co[:, 2].max() - all_co[:, 2].min())
+    eps = 1e-3 * height
+    toward_camera = Vector((0.0, -1.0, 0.0))  # the camera looks along +Y from -Y
+
+    for o, wco, wno, _ in parts:
+        me = o.data
+        px, py = s * wco[:, 0] + ox, s * wco[:, 2] + oy
+        weight = smoothstep(facing[0], facing[1], -wno[:, 1])
+        xi = np.clip(np.round(px).astype(int), 0, w - 1)
+        yi = np.clip(np.round(py).astype(int), 0, h - 1)
+        weight *= inner[yi, xi]
+        for i in np.flatnonzero(weight > 0):
+            origin = Vector((wco[i] + wno[i] * eps).tolist())
+            if bvh.ray_cast(origin, toward_camera)[0] is not None:
+                weight[i] = 0.0  # something is in front of this point
+        attr = me.attributes.get("front_weight") or me.attributes.new(
+            "front_weight", "FLOAT", "POINT"
+        )
+        attr.data.foreach_set("value", weight.astype(np.float32))
+
+        render_uv = next((uv for uv in me.uv_layers if uv.active_render), None)
+        active_index = me.uv_layers.active_index
+        uvl = me.uv_layers.get("front_proj") or me.uv_layers.new(name="front_proj", do_init=False)
+        loop_v = np.empty(len(me.loops), np.int32)
+        me.loops.foreach_get("vertex_index", loop_v)
+        uv = np.stack([(px + 0.5) / w, (py + 0.5) / h], axis=1)[loop_v].astype(np.float32)
+        uvl.uv.foreach_set("vector", uv.ravel())
+        me.uv_layers.active_index = active_index
+        if render_uv is not None:
+            render_uv.active_render = True
+        print(
+            f"[toon] {o.name}: {int((weight > 0).sum())} vertices use the source image", flush=True
+        )
+
+    proj = bpy.data.images.new("FrontProjection", w, h, alpha=True)
+    out = rgba.copy()
+    out[..., 3] = inner.astype(np.float32)
+    proj.pixels.foreach_set(out.ravel())
+    proj.alpha_mode = "STRAIGHT"
+    proj.pack()
+    return proj
+
+
+def insert_projection(bpy, mat, proj_image) -> bool:
+    """Blend ``proj_image`` (via ``front_proj`` UVs) into the colour feeding ToonShade."""
+    nt = mat.node_tree
+    grp = next(
+        (
+            n
+            for n in nt.nodes
+            if n.type == "GROUP" and n.node_tree and n.node_tree.name.startswith("ToonShade")
+        ),
+        None,
+    )
+    if grp is None:
+        return False
+    sock = grp.inputs["Color"]
+    base = sock.links[0].from_socket if sock.is_linked else None
+    x, y = grp.location.x, grp.location.y
+    uvn = nt.nodes.new("ShaderNodeUVMap")
+    uvn.uv_map = "front_proj"
+    uvn.location = (x - 900, y - 250)
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = proj_image
+    tex.extension = "CLIP"
+    tex.location = (x - 700, y - 250)
+    attr = nt.nodes.new("ShaderNodeAttribute")
+    attr.attribute_type = "GEOMETRY"
+    attr.attribute_name = "front_weight"
+    attr.location = (x - 700, y - 550)
+    fac = nt.nodes.new("ShaderNodeMath")
+    fac.operation = "MULTIPLY"
+    fac.location = (x - 420, y - 400)
+    mix = nt.nodes.new("ShaderNodeMix")
+    mix.data_type = "RGBA"
+    mix.blend_type = "MIX"
+    mix.label = "Front projection"
+    mix.location = (x - 220, y - 150)
+    nt.links.new(uvn.outputs["UV"], tex.inputs["Vector"])
+    nt.links.new(attr.outputs["Fac"], fac.inputs[0])
+    nt.links.new(tex.outputs["Alpha"], fac.inputs[1])
+    nt.links.new(fac.outputs["Value"], mix.inputs["Factor"])
+    if base is not None:
+        nt.links.new(base, mix.inputs["A"])
+    else:
+        mix.inputs["A"].default_value = tuple(sock.default_value)
+    nt.links.new(tex.outputs["Color"], mix.inputs["B"])
+    nt.links.new(mix.outputs["Result"], sock)
+    return True
 
 
 def setup_engine(bpy, scene, args) -> None:
