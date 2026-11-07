@@ -12,3 +12,17 @@ def test_3d_friendly_tags_toggle():
 
 def test_empty_subject_has_no_trailing_comma():
     assert not build_prompt("   ").endswith(",")
+
+
+def test_hand_presets():
+    import pytest
+
+    from maker3d.prompts import HAND_NEGATIVE, NEGATIVE
+
+    assert "clenched hands" in build_prompt("1girl")
+    assert "fingers together" in build_prompt("1girl", hands="relaxed")
+    assert "hands" not in build_prompt("1girl", hands="free")
+    assert "hands" not in build_prompt("1girl", three_d_friendly=False)
+    assert NEGATIVE.endswith(HAND_NEGATIVE)
+    with pytest.raises(ValueError):
+        build_prompt("1girl", hands="claws")
