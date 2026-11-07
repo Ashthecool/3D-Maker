@@ -140,7 +140,7 @@ def test_smooth_vertex_values():
 def test_smoothing_iterations():
     assert ts.smoothing_iterations(0.0, 0.01) == 0 and ts.smoothing_iterations(0.1, 0.0) == 0
     assert ts.smoothing_iterations(0.02, 0.01) == 10  # (2 edges)^2 / 0.43, rounded up
-    assert ts.smoothing_iterations(1.0, 0.001) == 300  # capped
+    assert ts.smoothing_iterations(1.0, 0.001) == 800  # capped
 
 
 def _grid(n=21, bump=0.0, seed=0):
@@ -190,6 +190,29 @@ def test_smooth_normals_flatten_noise_across_the_seam():
     assert flat == pytest.approx(normals)  # no edges: nothing to average with
     opposite = ts.smooth_normals(np.array([[0, 0, 1.0], [0, 0, -1.0]]), np.array([[0, 1]]), 1)
     assert opposite[:, 2] == pytest.approx([1.0, -1.0])  # cancels out: keep the original
+
+
+def test_coarse_smoothing_matches_the_fine_blur():
+    co, normals, edges = _grid(n=81, bump=0.3, seed=4)
+    weld = ts.weld_vertices(co, 1e-6)
+    fine = ts.smooth_normals(normals, edges, 150, weld)
+    coarse = ts.smooth_normals(normals, edges, 150, weld, co)
+    assert coarse[:, 2].min() > 0.99 and fine[:, 2].min() > 0.99
+    assert np.degrees(np.arccos(np.clip((fine * coarse).sum(1), -1, 1))).max() < 3.0
+    copies, originals = np.arange(81 * 81, len(co)), np.arange(81) * 81 + 40
+    assert coarse[copies] == pytest.approx(coarse[originals])
+
+
+def test_coarse_smoothing_keeps_thin_sheets_apart():
+    # Two grids 1/40 of an edge apart (front and back of a sleeve), facing away.
+    co, normals, edges = _grid(n=41, bump=0.2, seed=5)
+    back = co.copy()
+    back[:, 2] -= 0.001
+    pts = np.concatenate([co, back])
+    nrm = np.concatenate([normals, normals * [1, 1, -1]])
+    e = np.concatenate([edges, edges + len(co)])
+    out = ts.smooth_normals(nrm, e, 200, ts.weld_vertices(pts, 1e-6), pts)
+    assert out[: len(co), 2].min() > 0.95 and out[len(co) :, 2].max() < -0.95
 
 
 def test_grid_regress_local_means():
