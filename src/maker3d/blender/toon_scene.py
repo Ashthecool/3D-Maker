@@ -316,6 +316,29 @@ def grid_regress(feat, values, query, bins, sigma):
     return acc[:, :-1] / np.maximum(weight, 1e-9)[:, None], weight
 
 
+def kmeans(x, k: int, iters: int = 25, seed: int = 0, fit_max: int = 20000):
+    """Plain k-means (k-means++ start). Returns ``(centres (k', D), labels (N,))``."""
+    import numpy as np
+
+    x = np.asarray(x, dtype=np.float64)
+    rng = np.random.default_rng(seed)
+    fit = x[rng.choice(len(x), fit_max, replace=False)] if len(x) > fit_max else x
+    centres = [fit[rng.integers(len(fit))]]
+    for _ in range(1, k):
+        d2 = ((fit[:, None, :] - np.array(centres)[None]) ** 2).sum(-1).min(axis=1)
+        if d2.sum() <= 1e-12:
+            break  # fewer distinct colours than k
+        centres.append(fit[rng.choice(len(fit), p=d2 / d2.sum())])
+    c = np.array(centres)
+    for _ in range(iters):
+        lab = ((fit[:, None, :] - c[None]) ** 2).sum(-1).argmin(axis=1)
+        new = np.array([fit[lab == j].mean(0) if (lab == j).any() else c[j] for j in range(len(c))])
+        if np.allclose(new, c):
+            break
+        c = new
+    return c, ((x[:, None, :] - c[None]) ** 2).sum(-1).argmin(axis=1)
+
+
 def match_colors(
     src_xz,
     src_guide,
@@ -325,19 +348,25 @@ def match_colors(
     cell: float = 1 / 40,
     color_bins=(12, 8, 8),
     min_weight: float = 2.0,
+    n_colors: int = 12,
+    sharpen: float = 3.0,
 ):
     """Source-image colour for every point, from its x/z position and TRELLIS colour.
 
     ``src_*``: front-visible points with a known source colour. ``guide`` values come from
-    ``color_guide``. Predictions go coarse to fine: colour only (whole model), then
-    position + colour with a wide and a narrow spatial blur; each finer level takes over
-    where it has enough samples (``min_weight``). ``cell`` is the spatial cell size as a
-    fraction of the model height.
+    ``color_guide``. The source colours are reduced to a palette of ``n_colors``; for every
+    point the grid estimates how likely each palette colour is, going coarse to fine:
+    colour only (whole model), then position + colour with a wide and a narrow spatial
+    blur, each finer level taking over where it has enough samples (``min_weight``).
+    Probabilities are raised to ``sharpen`` before mixing, so ambiguous spots pick the
+    likelier flat colour instead of a muddy average. ``cell`` is the spatial cell size as
+    a fraction of the model height.
     """
     import numpy as np
 
     src_xz, xz = np.asarray(src_xz, np.float64), np.asarray(xz, np.float64)
-    src_rgb = np.asarray(src_rgb, np.float64)
+    palette, labels = kmeans(src_rgb, n_colors)
+    src_rgb = np.eye(len(palette))[labels]  # one-hot: regress probabilities, not colours
     both = np.concatenate([src_xz, xz])
     lo, size = both.min(axis=0), np.ptp(both, axis=0)
     unit = max(float(size[1]), 1e-9) * cell  # cell edge in world units
@@ -361,7 +390,9 @@ def match_colors(
         p, w = grid_regress(fs, src_rgb, fq, sbins + tuple(color_bins), (s, s, 1.0, 1.0, 1.0))
         a = (w / (w + min_weight))[:, None]
         pred = a * p + (1 - a) * pred
-    return np.clip(pred, 0.0, 1.0)
+    weights = np.clip(pred, 0.0, None) ** sharpen
+    weights /= np.maximum(weights.sum(axis=1, keepdims=True), 1e-12)
+    return np.clip(weights @ palette, 0.0, 1.0)
 
 
 def hex_to_rgb(value: str) -> tuple[float, float, float]:

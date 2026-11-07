@@ -101,6 +101,17 @@ def test_grid_regress_local_means():
     assert (weight > 10).all()
 
 
+def test_kmeans():
+    rng = np.random.default_rng(3)
+    blobs = np.array([[0.1, 0.1, 0.1], [0.9, 0.9, 0.9], [0.7, 0.1, 0.1]])
+    x = np.concatenate([b + rng.normal(0, 0.02, (300, 3)) for b in blobs])
+    centres, labels = ts.kmeans(x, 3)
+    assert sorted(map(tuple, centres.round(1))) == sorted(map(tuple, blobs))
+    assert len(set(labels[:300])) == 1 and len(set(labels)) == 3
+    one, _ = ts.kmeans(np.ones((50, 3)), 4)  # fewer distinct colours than k
+    assert len(one) == 1
+
+
 def _materials(x, z):
     """0 = hair (head, and down both sides), 1 = jacket (middle), 2 = legs."""
     hair = (z > 0.62) | ((np.abs(x) > 0.18) & (z > 0.3))
