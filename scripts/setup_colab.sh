@@ -36,12 +36,12 @@ COMFY_REF="$(cfg COMFYUI_REF)"
 
 step "ComfyUI $COMFY_REF -> $COMFY_DIR"
 if [ ! -d "$COMFY_DIR/.git" ]; then
-  git clone -q --depth 1 --branch "$COMFY_REF" "$COMFY_REPO" "$COMFY_DIR"
+  git -c advice.detachedHead=false clone -q --depth 1 --branch "$COMFY_REF" "$COMFY_REPO" "$COMFY_DIR"
 else
   current="$(git -C "$COMFY_DIR" describe --tags --exact-match 2>/dev/null || echo unknown)"
   if [ "$current" != "$COMFY_REF" ]; then
     git -C "$COMFY_DIR" fetch -q --depth 1 origin tag "$COMFY_REF"
-    git -C "$COMFY_DIR" checkout -q "$COMFY_REF"
+    git -C "$COMFY_DIR" -c advice.detachedHead=false checkout -q "$COMFY_REF"
   fi
 fi
 # Keep Colab's preinstalled torch/torchvision/torchaudio: they already satisfy ComfyUI.
