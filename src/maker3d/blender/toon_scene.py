@@ -318,6 +318,14 @@ def make_toon_material(bpy, mat, toon_group) -> None:
     nt.links.new(grp.outputs["Color"], emit.inputs["Color"])
     nt.links.new(emit.outputs["Emission"], output.inputs["Surface"])
     output.is_active_output = True
+    no_light_sampling(mat)
+
+
+def no_light_sampling(mat) -> None:
+    """Emission here is just flat colour; don't make Cycles treat every face as a light."""
+    cycles_settings = getattr(mat, "cycles", None)
+    if cycles_settings is not None and hasattr(cycles_settings, "emission_sampling"):
+        cycles_settings.emission_sampling = "NONE"
 
 
 def build_outline_material(bpy):
@@ -346,6 +354,7 @@ def build_outline_material(bpy):
     nt.links.new(mix.outputs["Shader"], out.inputs["Surface"])
     if hasattr(mat, "surface_render_method"):
         mat.surface_render_method = "DITHERED"
+    no_light_sampling(mat)
     return mat
 
 
@@ -356,7 +365,10 @@ def add_outline(obj, outline_mat, thickness: float) -> None:
     mod.offset = 1.0
     mod.use_flip_normals = True
     mod.use_rim = False
-    mod.use_even_offset = True
+    # Even offset spikes at sharp/degenerate vertices of generated meshes; clamp instead.
+    mod.use_even_offset = False
+    mod.use_quality_normals = True
+    mod.thickness_clamp = 1.0
     mod.material_offset = len(obj.data.materials) - 1
 
 
@@ -371,6 +383,7 @@ def setup_engine(bpy, scene, args) -> None:
         scene.eevee.taa_render_samples = args.samples
         return
     scene.render.engine = "CYCLES"
+    scene.render.use_persistent_data = True  # keep geometry/textures between turntable frames
     cyc = scene.cycles
     cyc.samples = args.samples
     cyc.use_denoising = False
