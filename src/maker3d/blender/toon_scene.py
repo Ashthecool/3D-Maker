@@ -7,12 +7,13 @@ Writes to ``--out``: ``stills/{front,three_quarter,side,back}.png``, ``turntable
 (if ffmpeg is on PATH; the PNG frames are kept in ``frames/``) and a packed ``toon.blend``.
 
 Design (engine-agnostic, so Cycles can render headless on Colab and EEVEE works locally):
-- Cel bands: dot(normal, light_dir) -> constant ColorRamp, multiplied with the base-color
-  texture and output as Emission. Avoids EEVEE-only Shader-to-RGB.
+- Cel bands: dot(normal, light_dir) -> constant ColorRamp, which picks between the base
+  colour and a shadow colour derived from it per pixel; output as Emission. Avoids
+  EEVEE-only Shader-to-RGB. The normal can be a smoothed copy for cleaner shadow shapes.
 - Outline: inverted hull (Solidify, flipped normals) with a black material masked by
   Geometry > Backfacing instead of the backface-culling flag.
 - Color management: Standard view transform (not AgX) so flat colours stay flat.
-- Camera: orthographic; turntable keyed on twos (constant interpolation every 2 frames).
+- Camera: orthographic; turntable held on twos or threes (constant interpolation).
 
 Everything that does not need ``bpy`` is importable from plain Python for tests.
 """
@@ -30,6 +31,10 @@ from pathlib import Path
 STYLES = ("flat", "cel", "cel_rim")
 LIGHT_DIR = (-0.45, -0.65, 0.62)  # from camera-left, front and above (Blender: -Y is front)
 SHADOW_TINT = (0.62, 0.58, 0.78)  # bluish-purple shadow multiplier
+SHADOW_SATURATION = 1.35  # shadows are richer than the lit colour, not greyer (#21)
+# Base colours at least this saturated keep their own hue in shadow (skin goes rosy, red
+# goes crimson); greyer ones (silver, white, black) take the cool SHADOW_TINT instead.
+OWN_HUE_SATURATION = 0.25
 STILLS = {"front": 0.0, "three_quarter": 45.0, "side": 90.0, "back": 180.0}
 
 
@@ -39,7 +44,7 @@ STILLS = {"front": 0.0, "three_quarter": 45.0, "side": 90.0, "back": 180.0}
 @dataclass(frozen=True)
 class Band:
     position: float  # 0..1 on the half-Lambert factor
-    value: tuple[float, float, float]  # RGB multiplier for the base colour
+    light: float  # 0 = the shadow colour, 1 = the base colour
 
 
 def cel_bands(style: str, bands: int) -> list[Band]:
@@ -47,14 +52,44 @@ def cel_bands(style: str, bands: int) -> list[Band]:
     if style not in STYLES:
         raise ValueError(f"unknown style {style!r}; choose from {STYLES}")
     if style == "flat":
-        return [Band(0.0, (1.0, 1.0, 1.0))]
+        return [Band(0.0, 1.0)]
     if bands not in (2, 3):
         raise ValueError("bands must be 2 or 3")
-    lit = (1.0, 1.0, 1.0)
     if bands == 2:
-        return [Band(0.0, SHADOW_TINT), Band(0.5, lit)]
-    mid = tuple(round((s + 1.0) / 2, 4) for s in SHADOW_TINT)
-    return [Band(0.0, SHADOW_TINT), Band(0.42, mid), Band(0.62, lit)]
+        return [Band(0.0, 0.0), Band(0.5, 1.0)]
+    return [Band(0.0, 0.0), Band(0.42, 0.5), Band(0.62, 1.0)]
+
+
+def tint_luminance(tint) -> float:
+    """Rec.709 luminance, as Blender's RGB to BW node computes it in linear Rec.709."""
+    return 0.2126 * tint[0] + 0.7152 * tint[1] + 0.0722 * tint[2]
+
+
+def shadow_color(
+    rgb,
+    tint=SHADOW_TINT,
+    saturation: float = SHADOW_SATURATION,
+    hue_shift: float = 0.0,
+    strength: float = 1.0,
+    own_hue: float = OWN_HUE_SATURATION,
+):
+    """Reference for the ToonShade group's shadow colour (scene-linear RGB in and out).
+
+    The tint fades from ``tint`` (for grey bases) to a neutral grey of the same
+    luminance (for bases with saturation >= ``own_hue``), so colourful parts get darker
+    in their own hue. Then saturation x ``saturation`` and hue + ``hue_shift`` in HSV,
+    mixed with the base by ``strength``. Mirrors the node graph in build_toon_group().
+    """
+    import colorsys
+
+    base = [float(c) for c in rgb]
+    w = min(max(colorsys.rgb_to_hsv(*base)[1] / own_hue, 0.0), 1.0)
+    grey = tint_luminance(tint)
+    tint = [t + (grey - t) * w for t in tint]
+    tinted = [c * t for c, t in zip(base, tint, strict=True)]
+    h, s, v = colorsys.rgb_to_hsv(*tinted)
+    shaded = colorsys.hsv_to_rgb((h + hue_shift) % 1.0, min(max(s * saturation, 0.0), 1.0), v)
+    return tuple(b + (c - b) * strength for b, c in zip(base, shaded, strict=True))
 
 
 def normalized(v: tuple[float, float, float]) -> tuple[float, float, float]:
@@ -81,7 +116,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--res", type=int, default=1024)
     p.add_argument("--samples", type=int, default=16)
     p.add_argument("--frames", type=int, default=96, help="turntable length at 24 fps")
+    p.add_argument(
+        "--hold", type=int, choices=(1, 2, 3, 4), default=2, help="frames per pose: 2 = on twos"
+    )
+    p.add_argument(
+        "--ease", type=float, default=0.3, help="linger on the front/back views (0 = even spin)"
+    )
     p.add_argument("--no-turntable", action="store_true")
+    p.add_argument(
+        "--normal-smooth",
+        type=float,
+        default=0.02,
+        help="blur shading normals over this fraction of the model height (0 = off)",
+    )
     p.add_argument(
         "--yaw", type=float, default=0.0, help="extra rotation (deg) so the model faces -Y"
     )
@@ -244,12 +291,13 @@ def smooth_vertex_values(values, edges, iterations: int = 3):
 
     values = np.asarray(values, dtype=np.float64)
     edges = np.asarray(edges, dtype=np.int64).reshape(-1, 2)
-    degree = np.bincount(edges.ravel(), minlength=len(values)).astype(np.float64)[:, None]
+    n, channels = values.shape
+    src = np.concatenate([edges[:, 0], edges[:, 1]])
+    dst = np.concatenate([edges[:, 1], edges[:, 0]])
+    degree = np.bincount(src, minlength=n).astype(np.float64)[:, None] + 1.0
     for _ in range(iterations):
-        total = values.copy()
-        np.add.at(total, edges[:, 0], values[edges[:, 1]])
-        np.add.at(total, edges[:, 1], values[edges[:, 0]])
-        values = total / (degree + 1.0)
+        sums = [np.bincount(src, weights=values[dst, c], minlength=n) for c in range(channels)]
+        values = (values + np.stack(sums, axis=1)) / degree
     return values
 
 
@@ -405,6 +453,83 @@ def hex_to_rgb(value: str) -> tuple[float, float, float]:
 
 
 # --------------------------------------------------------------------------------------
+# Smoothed shading normals (issue #23), numpy only. Guilty Gear Xrd hand-edits normals
+# so cel shadows fall in a few large, clean shapes. TRELLIS.2 meshes have small bumps
+# everywhere, so their raw normals give blotchy bands; blurring the normals along the
+# surface is the automatic stand-in. The blurred normals go into a ``toon_normal``
+# attribute and the shader mixes them in, so the original normals stay available.
+# --------------------------------------------------------------------------------------
+def weld_vertices(co, tol: float):
+    """Index of a shared vertex for each vertex: coincident vertices get the same one.
+
+    The glTF importer splits a mesh along its UV seams, leaving two vertices with no edge
+    between them at every seam point. Smoothing has to see them as one, or seams show.
+    """
+    import numpy as np
+
+    q = np.round(np.asarray(co, dtype=np.float64) / tol).astype(np.int64)
+    _, inverse = np.unique(q, axis=0, return_inverse=True)
+    return inverse.reshape(-1)
+
+
+def smoothing_iterations(radius: float, edge_length: float, max_iterations: int = 300) -> int:
+    """Neighbour-averaging passes that blur over about ``radius`` (a Gaussian sigma).
+
+    A pass moves weight about one edge (variance ~0.43 edge^2 per axis on a triangle
+    mesh), so k passes spread ``edge * sqrt(0.43 k)``.
+    """
+    if radius <= 0 or edge_length <= 0:
+        return 0
+    return int(min(max_iterations, math.ceil((radius / edge_length) ** 2 / 0.43)))
+
+
+def smooth_normals(normals, edges, iterations: int, weld=None):
+    """Blur vertex normals along the mesh ``iterations`` times; returns unit vectors.
+
+    ``weld`` (from ``weld_vertices``) joins split seam vertices first. Where the blur
+    cancels out (the tip of a thin sheet), the original normal is kept.
+    """
+    import numpy as np
+
+    normals = np.asarray(normals, dtype=np.float64)
+    edges = np.asarray(edges, dtype=np.int64).reshape(-1, 2)
+    if weld is None:
+        out = smooth_vertex_values(normals, edges, iterations)
+    else:
+        weld = np.asarray(weld, dtype=np.int64)
+        m = int(weld.max()) + 1 if len(weld) else 0
+        merged = np.stack(
+            [np.bincount(weld, weights=normals[:, c], minlength=m) for c in range(3)], axis=1
+        )
+        e = np.sort(weld[edges], axis=1)
+        e = np.unique(e[e[:, 0] != e[:, 1]], axis=0)  # seam edges exist on both sides
+        out = smooth_vertex_values(merged, e, iterations)[weld]
+    length = np.linalg.norm(out, axis=1, keepdims=True)
+    return np.where(length > 1e-6, out / np.maximum(length, 1e-12), normals)
+
+
+# --------------------------------------------------------------------------------------
+# Limited-animation turntable (issue #22)
+# --------------------------------------------------------------------------------------
+def turntable_keys(frames: int, hold: int = 2, ease: float = 0.0) -> list[tuple[int, float]]:
+    """(frame, fraction of a full turn) keys: a new pose every ``hold`` frames.
+
+    ``ease`` (0 to <1) slows the spin around the front and back views and speeds it up
+    through the sides, the way hand-timed key poses linger on the good angles. The turn
+    stays monotonic, starts at 0 and passes exactly 0.5 halfway.
+    """
+    if hold < 1:
+        raise ValueError("hold must be at least 1 frame")
+    if not 0.0 <= ease < 1.0:
+        raise ValueError("ease must be in [0, 1)")
+    keys = []
+    for f in range(1, frames + 1, hold):
+        t = (f - 1) / frames
+        keys.append((f, t - ease * math.sin(4 * math.pi * t) / (4 * math.pi)))
+    return keys
+
+
+# --------------------------------------------------------------------------------------
 # Blender side
 # --------------------------------------------------------------------------------------
 def main(argv: list[str]) -> None:
@@ -423,6 +548,7 @@ def main(argv: list[str]) -> None:
     meshes = [o for o in scene.objects if o.type == "MESH"]
     if not meshes:
         raise SystemExit(f"no meshes in {args.glb}")
+    smoothed = add_smooth_normals(meshes, args.normal_smooth)
     proj_image, color_matched = None, False
     if args.source_image:
         rotate_yaw = math.radians(args.yaw)
@@ -458,7 +584,7 @@ def main(argv: list[str]) -> None:
     pivot.rotation_euler = (0.0, 0.0, base_yaw)
 
     # --- materials ------------------------------------------------------------------
-    toon_group = build_toon_group(bpy, args.style, args.bands)
+    toon_group = build_toon_group(bpy, args.style, args.bands, smooth_normals=smoothed)
     for mat in {s.material for o in meshes for s in o.material_slots if s.material}:
         make_toon_material(bpy, mat, toon_group)
         if proj_image is not None:
@@ -508,17 +634,19 @@ def main(argv: list[str]) -> None:
         print(f"[toon] still {name} -> {r.filepath}", flush=True)
     pivot.rotation_euler.z = base_yaw
 
-    # --- turntable on twos ----------------------------------------------------------
+    # --- turntable, a new pose every --hold frames ----------------------------------
     scene.frame_start, scene.frame_end = 1, args.frames
-    key_turntable(pivot, base_yaw, args.frames)
+    key_turntable(pivot, base_yaw, turntable_keys(args.frames, args.hold, args.ease))
     if not args.no_turntable:
         frames_dir = out / "frames"
         frames_dir.mkdir(exist_ok=True)
-        scene.frame_step = 2  # only the frames that change
+        for old in frames_dir.glob("f_*.png"):  # a re-render with another --hold
+            old.unlink()
+        scene.frame_step = args.hold  # only the frames that change
         r.filepath = str(frames_dir / "f_")
         bpy.ops.render.render(animation=True)
         scene.frame_step = 1
-        encode_mp4(frames_dir, out / "turntable.mp4", args.background)
+        encode_mp4(frames_dir, out / "turntable.mp4", args.background, args.hold)
 
     # --- save -----------------------------------------------------------------------
     scene.frame_set(1)
@@ -528,26 +656,94 @@ def main(argv: list[str]) -> None:
     print(f"[toon] saved {out / 'toon.blend'}", flush=True)
 
 
-def build_toon_group(bpy, style: str, bands: int):
-    """Node group: Color in -> toon-shaded Color out. Light direction lives here once."""
+def _group_input(g, name: str, socket_type: str, default, lo=None, hi=None, tip: str = ""):
+    sock = g.interface.new_socket(name, in_out="INPUT", socket_type=socket_type)
+    sock.default_value = default
+    if lo is not None:
+        sock.min_value, sock.max_value = lo, hi
+    sock.description = tip
+    return sock
+
+
+def build_toon_group(bpy, style: str, bands: int, smooth_normals: bool = False):
+    """Node group: Color in -> toon-shaded Color out. Light direction lives here once.
+
+    The shadow colour is derived from each pixel's base colour (issue #21): darker in its
+    own hue, more saturated, and with the cool tint only where the base is greyish
+    (``shadow_color`` is the same maths). The cel ramp picks between it and the base.
+    With ``smooth_normals``, the ``toon_normal`` attribute replaces the mesh normal for
+    the bands (issue #23); the "Smooth Normals" input blends back to the original.
+    """
     g = bpy.data.node_groups.new("ToonShade", "ShaderNodeTree")
     g.interface.new_socket("Color", in_out="INPUT", socket_type="NodeSocketColor")
+    _group_input(
+        g, "Shadow Tint", "NodeSocketColor", (*SHADOW_TINT, 1.0), tip="Multiplies the shadow"
+    )
+    _group_input(
+        g,
+        "Shadow Saturation",
+        "NodeSocketFloat",
+        SHADOW_SATURATION,
+        0.0,
+        3.0,
+        "Saturation of the shadow colour relative to the lit colour",
+    )
+    _group_input(g, "Shadow Hue Shift", "NodeSocketFloat", 0.0, -0.5, 0.5, "Rotate the shadow hue")
+    _group_input(g, "Shadow Strength", "NodeSocketFloat", 1.0, 0.0, 1.0, "0 = no shadow colour")
+    _group_input(
+        g,
+        "Smooth Normals",
+        "NodeSocketFloat",
+        1.0 if smooth_normals else 0.0,
+        0.0,
+        1.0,
+        "Blend from the mesh normals (0) to the smoothed toon_normal attribute (1)",
+    )
     g.interface.new_socket("Color", in_out="OUTPUT", socket_type="NodeSocketColor")
     n, links = g.nodes, g.links
     gin, gout = n.new("NodeGroupInput"), n.new("NodeGroupOutput")
-    gin.location, gout.location = (-900, 0), (500, 0)
+    gin.location, gout.location = (-1300, 0), (700, 0)
 
     geo = n.new("ShaderNodeNewGeometry")
-    geo.location = (-900, -250)
+    geo.location = (-1300, -350)
+    normal = geo.outputs["Normal"]
+    if smooth_normals:
+        attr = n.new("ShaderNodeAttribute")
+        attr.attribute_type = "GEOMETRY"
+        attr.attribute_name = "toon_normal"
+        attr.label = "Smoothed normal (object space)"
+        attr.location = (-1300, -600)
+        to_world = n.new("ShaderNodeVectorTransform")
+        to_world.vector_type = "NORMAL"
+        to_world.convert_from = "OBJECT"
+        to_world.convert_to = "WORLD"
+        to_world.location = (-1100, -600)
+        links.new(attr.outputs["Vector"], to_world.inputs["Vector"])
+        # normal + Smooth Normals * (smoothed - normal), renormalised
+        steps = []
+        for op, x in (("SUBTRACT", -900), ("SCALE", -750), ("ADD", -600), ("NORMALIZE", -450)):
+            node = n.new("ShaderNodeVectorMath")
+            node.operation = op
+            node.location = (x, -600)
+            steps.append(node)
+        sub, scale, add, unit = steps
+        links.new(to_world.outputs["Vector"], sub.inputs[0])
+        links.new(normal, sub.inputs[1])
+        links.new(sub.outputs["Vector"], scale.inputs[0])
+        links.new(gin.outputs["Smooth Normals"], scale.inputs["Scale"])
+        links.new(normal, add.inputs[0])
+        links.new(scale.outputs["Vector"], add.inputs[1])
+        links.new(add.outputs["Vector"], unit.inputs[0])
+        normal = unit.outputs["Vector"]
     light = n.new("ShaderNodeCombineXYZ")
     light.label = "Light direction (world)"
-    light.location = (-900, -450)
+    light.location = (-900, -350)
     for axis, value in zip("XYZ", normalized(LIGHT_DIR), strict=True):
         light.inputs[axis].default_value = value
     dot = n.new("ShaderNodeVectorMath")
     dot.operation = "DOT_PRODUCT"
     dot.location = (-650, -300)
-    links.new(geo.outputs["Normal"], dot.inputs[0])
+    links.new(normal, dot.inputs[0])
     links.new(light.outputs["Vector"], dot.inputs[1])
     half = n.new("ShaderNodeMapRange")  # half-Lambert: -1..1 -> 0..1
     half.location = (-450, -300)
@@ -562,28 +758,72 @@ def build_toon_group(bpy, style: str, bands: int):
     elems = ramp.color_ramp.elements
     while len(elems) > 1:
         elems.remove(elems[-1])
-    elems[0].position, elems[0].color = stops[0].position, (*stops[0].value, 1.0)
+    elems[0].position, elems[0].color = stops[0].position, (stops[0].light,) * 3 + (1.0,)
     for band in stops[1:]:
         e = elems.new(band.position)
-        e.color = (*band.value, 1.0)
+        e.color = (band.light,) * 3 + (1.0,)
     links.new(half.outputs["Result"], ramp.inputs["Fac"])
 
-    mul = n.new("ShaderNodeMix")
-    mul.data_type = "RGBA"
-    mul.blend_type = "MULTIPLY"
-    mul.location = (50, 0)
-    mul.inputs["Factor"].default_value = 1.0
-    links.new(gin.outputs["Color"], mul.inputs["A"])
-    links.new(ramp.outputs["Color"], mul.inputs["B"])
-    result = mul.outputs["Result"]
+    # Shadow colour from the base colour (see shadow_color() for the same maths in Python)
+    sep = n.new("ShaderNodeSeparateColor")
+    sep.mode = "HSV"
+    sep.location = (-1100, 450)
+    links.new(gin.outputs["Color"], sep.inputs["Color"])
+    own = n.new("ShaderNodeMapRange")  # base saturation -> 0 (cool tint) .. 1 (own hue)
+    own.label = "Keep own hue from saturation"
+    own.location = (-900, 450)
+    own.inputs["From Max"].default_value = OWN_HUE_SATURATION
+    links.new(sep.outputs[1], own.inputs["Value"])
+    grey = n.new("ShaderNodeRGBToBW")
+    grey.location = (-1100, 250)
+    links.new(gin.outputs["Shadow Tint"], grey.inputs["Color"])
+    tint = n.new("ShaderNodeMix")
+    tint.data_type = "RGBA"
+    tint.location = (-850, 250)
+    links.new(own.outputs["Result"], tint.inputs["Factor"])
+    links.new(gin.outputs["Shadow Tint"], tint.inputs["A"])
+    links.new(grey.outputs["Val"], tint.inputs["B"])
+    tinted = n.new("ShaderNodeMix")
+    tinted.data_type = "RGBA"
+    tinted.blend_type = "MULTIPLY"
+    tinted.location = (-650, 250)
+    tinted.inputs["Factor"].default_value = 1.0
+    links.new(gin.outputs["Color"], tinted.inputs["A"])
+    links.new(tint.outputs["Result"], tinted.inputs["B"])
+    hue = n.new("ShaderNodeMath")
+    hue.operation = "ADD"
+    hue.location = (-650, 450)
+    hue.inputs[1].default_value = 0.5  # 0.5 = no hue change on the HSV node
+    links.new(gin.outputs["Shadow Hue Shift"], hue.inputs[0])
+    hsv = n.new("ShaderNodeHueSaturation")
+    hsv.label = "Shadow colour"
+    hsv.location = (-450, 300)
+    links.new(hue.outputs["Value"], hsv.inputs["Hue"])
+    links.new(gin.outputs["Shadow Saturation"], hsv.inputs["Saturation"])
+    links.new(tinted.outputs["Result"], hsv.inputs["Color"])
+    strength = n.new("ShaderNodeMix")
+    strength.data_type = "RGBA"
+    strength.location = (-250, 250)
+    links.new(gin.outputs["Shadow Strength"], strength.inputs["Factor"])
+    links.new(gin.outputs["Color"], strength.inputs["A"])
+    links.new(hsv.outputs["Color"], strength.inputs["B"])
+
+    shade = n.new("ShaderNodeMix")  # band light 0 -> shadow colour, 1 -> base colour
+    shade.data_type = "RGBA"
+    shade.label = "Cel shade"
+    shade.location = (50, 0)
+    links.new(ramp.outputs["Color"], shade.inputs["Factor"])
+    links.new(strength.outputs["Result"], shade.inputs["A"])
+    links.new(gin.outputs["Color"], shade.inputs["B"])
+    result = shade.outputs["Result"]
 
     if style == "cel_rim":
         rim = n.new("ShaderNodeLayerWeight")
-        rim.location = (-450, 250)
+        rim.location = (-450, 650)
         rim.inputs["Blend"].default_value = 0.35
         rim_ramp = n.new("ShaderNodeValToRGB")
         rim_ramp.label = "Rim"
-        rim_ramp.location = (-250, 250)
+        rim_ramp.location = (-250, 650)
         rim_ramp.color_ramp.interpolation = "CONSTANT"
         rim_ramp.color_ramp.elements[0].color = (0, 0, 0, 1)
         rim_ramp.color_ramp.elements[1].position = 0.6
@@ -592,14 +832,14 @@ def build_toon_group(bpy, style: str, bands: int):
         lit_only = n.new("ShaderNodeMix")  # rim only on the lit side
         lit_only.data_type = "RGBA"
         lit_only.blend_type = "MULTIPLY"
-        lit_only.location = (50, 250)
+        lit_only.location = (50, 500)
         lit_only.inputs["Factor"].default_value = 1.0
         links.new(rim_ramp.outputs["Color"], lit_only.inputs["A"])
         links.new(ramp.outputs["Color"], lit_only.inputs["B"])
         add = n.new("ShaderNodeMix")
         add.data_type = "RGBA"
         add.blend_type = "ADD"
-        add.location = (250, 0)
+        add.location = (300, 0)
         add.inputs["Factor"].default_value = 1.0
         links.new(result, add.inputs["A"])
         links.new(lit_only.outputs["Result"], add.inputs["B"])
@@ -691,6 +931,52 @@ def add_outline(obj, outline_mat, thickness: float) -> None:
     mod.use_quality_normals = True
     mod.thickness_clamp = 1.0
     mod.material_offset = len(obj.data.materials) - 1
+
+
+def add_smooth_normals(meshes, strength: float) -> bool:
+    """Write blurred vertex normals to a ``toon_normal`` attribute (object space).
+
+    ``strength``: blur radius as a fraction of the model height; 0 turns it off. Returns
+    whether the attribute was written (the ToonShade group only reads it then).
+    """
+    import time
+
+    import numpy as np
+    from mathutils import Vector
+
+    if strength <= 0:
+        return False
+    t0 = time.time()
+    corners = [o.matrix_world @ Vector(c) for o in meshes for c in o.bound_box]
+    height = max(c.z for c in corners) - min(c.z for c in corners)
+    for o in meshes:
+        me = o.data
+        n = len(me.vertices)
+        co = np.empty(n * 3, np.float32)
+        me.vertices.foreach_get("co", co)
+        co = co.reshape(n, 3)
+        no = np.empty(n * 3, np.float32)
+        me.vertices.foreach_get("normal", no)
+        edges = np.empty(len(me.edges) * 2, np.int64)
+        me.edges.foreach_get("vertices", edges)
+        edges = edges.reshape(-1, 2)
+        scale = abs(np.linalg.det(np.array(o.matrix_world)[:3, :3])) ** (1 / 3) or 1.0
+        local_height = height / scale
+        weld = weld_vertices(co, 1e-5 * local_height)
+        lengths = np.linalg.norm(co[edges[:, 0]] - co[edges[:, 1]], axis=1)
+        edge_length = float(lengths[lengths > 0].mean()) if lengths.size else 0.0
+        iterations = smoothing_iterations(strength * local_height, edge_length)
+        smooth = smooth_normals(no.reshape(n, 3), edges, iterations, weld)
+        attr = me.attributes.get("toon_normal") or me.attributes.new(
+            "toon_normal", "FLOAT_VECTOR", "POINT"
+        )
+        attr.data.foreach_set("vector", smooth.astype(np.float32).ravel())
+        print(
+            f"[toon] {o.name}: smoothed normals, {iterations} passes over {n} vertices "
+            f"({n - int(weld.max()) - 1} seam duplicates welded, {time.time() - t0:.1f}s)",
+            flush=True,
+        )
+    return True
 
 
 def add_front_projection(
@@ -988,26 +1274,37 @@ def setup_engine(bpy, scene, args) -> None:
     print("[toon] no GPU backend found, rendering Cycles on the CPU", flush=True)
 
 
-def key_turntable(pivot, base_yaw: float, frames: int) -> None:
-    """One full turn over ``frames`` frames, keyed every 2 frames with constant interpolation."""
-    for f in range(1, frames + 1, 2):
-        pivot.rotation_euler.z = base_yaw + 2 * math.pi * (f - 1) / frames
-        pivot.keyframe_insert("rotation_euler", index=2, frame=f)
-    action = pivot.animation_data.action
-    curves = action.fcurves if hasattr(action, "fcurves") else []
-    for fc in curves:
+def action_fcurves(action) -> list:
+    """F-curves of an action, for the legacy API and Blender 4.4+ layered actions."""
+    if hasattr(action, "fcurves"):
+        return list(action.fcurves)
+    curves = []
+    for layer in getattr(action, "layers", []):
+        for strip in layer.strips:
+            for bag in getattr(strip, "channelbags", []):
+                curves.extend(bag.fcurves)
+    return curves
+
+
+def key_turntable(pivot, base_yaw: float, keys: list[tuple[int, float]]) -> None:
+    """Key the pivot's spin at ``keys`` (from ``turntable_keys``), held until the next key."""
+    for frame, turn in keys:
+        pivot.rotation_euler.z = base_yaw + 2 * math.pi * turn
+        pivot.keyframe_insert("rotation_euler", index=2, frame=frame)
+    for fc in action_fcurves(pivot.animation_data.action):
         for kp in fc.keyframe_points:
             kp.interpolation = "CONSTANT"
 
 
-def encode_mp4(frames_dir: Path, dest: Path, background: str) -> None:
+def encode_mp4(frames_dir: Path, dest: Path, background: str, hold: int = 2) -> None:
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         print("[toon] ffmpeg not found; turntable frames kept in", frames_dir, flush=True)
         return
-    # Rendered frames are the odd ones (1, 3, 5, ...): play them at 12 fps, output 24 fps.
+    # Only every ``hold``-th frame is rendered: play them at 24/hold fps, output 24 fps,
+    # so each pose lasts ``hold`` video frames.
     cmd = [
-        ffmpeg, "-y", "-loglevel", "error", "-framerate", "12", "-pattern_type", "glob",
+        ffmpeg, "-y", "-loglevel", "error", "-framerate", f"24/{hold}", "-pattern_type", "glob",
         "-i", str(frames_dir / "f_*.png"), "-r", "24",
         "-vf", f"pad=ceil(iw/2)*2:ceil(ih/2)*2:color={background}",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(dest),

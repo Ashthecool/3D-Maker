@@ -196,7 +196,14 @@ def build_app(pipe: Pipeline | None = None, jobs_dir: str | Path | None = None):
                 0.0, 0.012, value=td.outline, step=0.001, label="Outline (0 = none)"
             )
             background = gr.ColorPicker(td.background, label="Background")
+        with gr.Row():
+            smooth = gr.Slider(
+                0.0, 0.05, value=td.normal_smooth, step=0.005, label="Smooth shadows (0 = off)"
+            )
             turntable = gr.Checkbox(td.turntable, label="Turntable video")
+            hold = gr.Radio(
+                [("on twos", 2), ("on threes", 3)], value=td.hold, label="Turntable timing"
+            )
         render = gr.Button("3 · Toon render (about 1 min)", variant="primary")
         stills = gr.Gallery(label="Toon stills", columns=4, height=360)
         video = gr.Video(label="Turntable")
@@ -275,7 +282,9 @@ def build_app(pipe: Pipeline | None = None, jobs_dir: str | Path | None = None):
             **gpu,
         )
 
-        def on_render(job_dir_value, style_v, bands_v, outline_v, background_v, turntable_v):
+        def on_render(
+            job_dir_value, style_v, bands_v, outline_v, background_v, smooth_v, turntable_v, hold_v
+        ):
             job = need_job(job_dir_value)
             settings = replace(
                 job.toon_settings(),
@@ -283,7 +292,9 @@ def build_app(pipe: Pipeline | None = None, jobs_dir: str | Path | None = None):
                 bands=int(bands_v),
                 outline=float(outline_v),
                 background=to_hex(background_v),
+                normal_smooth=float(smooth_v),
                 turntable=bool(turntable_v),
+                hold=int(hold_v),
             )
 
             def work():
@@ -302,7 +313,7 @@ def build_app(pipe: Pipeline | None = None, jobs_dir: str | Path | None = None):
 
         render.click(
             on_render,
-            [job_dir, style, bands, outline, background, turntable],
+            [job_dir, style, bands, outline, background, smooth, turntable, hold],
             [stills, video, download, status],
             **gpu,
         )

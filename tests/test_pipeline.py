@@ -237,6 +237,8 @@ def test_toon_settings_match_the_blender_script(tmp_path):
     defaults = toon_scene.parse_args(["--glb", "m.glb", "--out", "o"])
     for key in ("style", "bands", "outline", "res", "samples", "frames", "background"):
         assert getattr(args, key) == getattr(defaults, key), key
+    for key in ("hold", "ease", "normal_smooth"):
+        assert getattr(args, key) == getattr(defaults, key), key
     assert args.source_image == image and args.source_mask is None  # mask file is missing
     assert not args.no_color_match
     flat = pl.ToonSettings(outline=0, turntable=False, transparent=True, projection=False)

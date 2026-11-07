@@ -42,8 +42,11 @@ Bran Sculpts' Blender workflow (80.lv interview, 2024-03-12):
 
 What this pipeline can automate (it has no hand-authored data):
 - Smooth or transfer shading normals from a simplified copy, for cleaner cel shapes. This stands in for hand-edited normals.
+  - Done (#23): vertex normals blurred along the surface (seams welded first) go into a `toon_normal` attribute; ToonShade's "Smooth Normals" input blends between them and the mesh normals. `--normal-smooth` sets the blur radius as a fraction of the model height. Blurring the normals directly avoids the shrinking of a smoothed copy (fingers and hair strands collapse) and needs no Data Transfer modifier.
 - Derive a per-pixel shadow colour from the base texture (a hue-shifted, more saturated darker tone) instead of one flat tint.
+  - Done (#21): one cool tint turned skin shadows mauve. The tint now fades out as the base colour gets more saturated: colourful parts darken in their own hue (skin goes rosy, red goes crimson), greyish parts (silver hair, white, black) take the cool tint. Then the saturation is raised ×1.35. Tint, saturation, hue shift and strength are ToonShade inputs.
 - Turntable timing on twos or threes.
+  - Done (#22): `--hold 2|3` keys a new pose every N frames (constant interpolation) and `--ease` lingers on the front and back views.
 - Optional Freestyle lines for creases. Freestyle is CPU-based, so it works with headless Cycles. Grease Pencil Line Art needs the GPU draw engine, like EEVEE.
 - The Anima image's own line art already survives into the TRELLIS.2 texture bake.
 

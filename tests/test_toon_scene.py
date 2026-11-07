@@ -6,17 +6,64 @@ from maker3d.blender import toon_scene as ts
 
 
 def test_bands():
-    assert ts.cel_bands("flat", 2) == [ts.Band(0.0, (1.0, 1.0, 1.0))]
+    assert ts.cel_bands("flat", 2) == [ts.Band(0.0, 1.0)]
     two = ts.cel_bands("cel", 2)
     assert [b.position for b in two] == [0.0, 0.5]
-    assert two[0].value == ts.SHADOW_TINT and two[-1].value == (1.0, 1.0, 1.0)
+    assert two[0].light == 0.0 and two[-1].light == 1.0
     three = ts.cel_bands("cel_rim", 3)
     assert [b.position for b in three] == sorted(b.position for b in three)
-    assert all(lo <= mid <= 1.0 for lo, mid in zip(three[0].value, three[1].value, strict=True))
+    assert [b.light for b in three] == [0.0, 0.5, 1.0]
     with pytest.raises(ValueError):
         ts.cel_bands("anime", 2)
     with pytest.raises(ValueError):
         ts.cel_bands("cel", 4)
+
+
+def _saturation(rgb):
+    return 1 - min(rgb) / max(rgb)
+
+
+def test_shadow_color_is_per_colour_and_richer():
+    skin, silver, red = (1.0, 0.73, 0.6), (0.75, 0.69, 0.71), (0.34, 0.027, 0.033)
+    flat = [tuple(c * t for c, t in zip(x, ts.SHADOW_TINT, strict=True)) for x in (skin, silver)]
+    for base, old in zip((skin, silver), flat, strict=True):
+        new = ts.shadow_color(base)
+        assert max(new) < max(base)  # darker than the lit colour
+        assert _saturation(new) > _saturation(old)  # not the grey of a flat multiplier
+    assert ts.shadow_color(red)[0] > 5 * ts.shadow_color(red)[1]  # red stays red
+    sil = ts.shadow_color(silver)
+    assert sil[2] > sil[0] > sil[1]  # silver hair gets a cool lavender shadow
+    sk = ts.shadow_color(skin)
+    assert sk[0] > sk[1] >= sk[2]  # skin keeps its warm hue: not purple
+    pale = ts.shadow_color((0.89, 0.75, 0.71))
+    assert pale[0] > 1.15 * max(pale[1:]) and abs(pale[1] - pale[2]) < 0.05  # rosy, not mauve
+    assert ts.shadow_color(skin, strength=0.0) == pytest.approx(skin)
+    hue_shifted = ts.shadow_color(skin, hue_shift=-0.03)
+    assert hue_shifted[1] < ts.shadow_color(skin)[1]  # orange skin shifts towards red
+    assert all(0.0 <= c <= 1.0 for c in ts.shadow_color((1.0, 1.0, 1.0), saturation=3.0))
+
+
+def test_turntable_keys():
+    twos = ts.turntable_keys(96, hold=2)
+    assert [f for f, _ in twos[:3]] == [1, 3, 5] and len(twos) == 48
+    assert twos[24] == (49, pytest.approx(0.5))  # the back view halfway
+    threes = ts.turntable_keys(96, hold=3, ease=0.3)
+    assert len(threes) == 32 and threes[0] == (1, 0.0) and threes[16] == (49, pytest.approx(0.5))
+    turns = [t for _, t in threes]
+    steps = [b - a for a, b in zip(turns, turns[1:], strict=False)]
+    assert all(s > 0 for s in steps)  # always turning the same way
+    assert steps[0] < 1 / 32 < steps[8]  # slower past the front, faster past the side
+    with pytest.raises(ValueError):
+        ts.turntable_keys(96, hold=0)
+    with pytest.raises(ValueError):
+        ts.turntable_keys(96, ease=1.0)
+
+
+def test_parse_args_new_options():
+    args = ts.parse_args(["--glb", "m.glb", "--out", "o"])
+    assert args.hold == 2 and args.ease == 0.3 and args.normal_smooth > 0
+    args = ts.parse_args(["--glb", "m.glb", "--out", "o", "--hold", "3", "--normal-smooth", "0"])
+    assert args.hold == 3 and args.normal_smooth == 0
 
 
 def test_helpers():
@@ -88,6 +135,61 @@ def test_smooth_vertex_values():
     assert ts.smooth_vertex_values(values, edges, 3).sum() == pytest.approx(values.sum(), rel=0.3)
     lone = ts.smooth_vertex_values(np.array([[5.0]]), np.empty((0, 2)), 2)
     assert lone[0, 0] == 5.0  # no neighbours: unchanged
+
+
+def test_smoothing_iterations():
+    assert ts.smoothing_iterations(0.0, 0.01) == 0 and ts.smoothing_iterations(0.1, 0.0) == 0
+    assert ts.smoothing_iterations(0.02, 0.01) == 10  # (2 edges)^2 / 0.43, rounded up
+    assert ts.smoothing_iterations(1.0, 0.001) == 300  # capped
+
+
+def _grid(n=21, bump=0.0, seed=0):
+    """An n x n vertex grid in the XY plane (normals +Z), split into two along x = middle
+    like a glTF UV seam: the middle column of vertices exists twice with no edge between.
+    """
+    rng = np.random.default_rng(seed)
+    ij = [(i, j) for j in range(n) for i in range(n)]
+    co = np.array([(i / (n - 1), j / (n - 1), 0.0) for i, j in ij])
+    normals = np.tile([0.0, 0.0, 1.0], (len(co), 1))
+    normals[:, :2] += rng.normal(0, bump, (len(co), 2))
+    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+    mid = n // 2
+    dup = [k for k, (i, _) in enumerate(ij) if i == mid]
+    copy = {k: len(co) + d for d, k in enumerate(dup)}  # the right half's seam vertices
+    co = np.concatenate([co, co[dup]])
+    normals = np.concatenate([normals, normals[dup]])
+    edges = []
+    for k, (i, j) in enumerate(ij):
+        if i + 1 < n:  # along x; leaving the seam to the right starts at the copy
+            edges.append((copy[k] if i == mid else k, k + 1))
+        if j + 1 < n:  # along y; the seam column has this edge on both sides
+            edges.append((k, k + n))
+            if i == mid:
+                edges.append((copy[k], copy[k + n]))
+    return co, normals, np.array(edges)
+
+
+def test_weld_vertices():
+    co, _, _ = _grid()
+    weld = ts.weld_vertices(co, 1e-6)
+    assert weld.max() + 1 == 21 * 21  # the 21 seam copies join their originals
+    assert weld[21 * 21] == weld[10]  # first copy is vertex (10, 0)
+
+
+def test_smooth_normals_flatten_noise_across_the_seam():
+    co, normals, edges = _grid(bump=0.3)
+    weld = ts.weld_vertices(co, 1e-6)
+    out = ts.smooth_normals(normals, edges, 20, weld)
+    assert np.linalg.norm(out, axis=1) == pytest.approx(1.0)
+    assert out[:, 2].min() > 0.97 > normals[:, 2].min()  # the bumps are gone
+    copies, originals = np.arange(21 * 21, len(co)), np.arange(21) * 21 + 10
+    assert out[copies] == pytest.approx(out[originals])  # both sides of the seam agree
+    unwelded = ts.smooth_normals(normals, edges, 20)
+    assert np.abs(unwelded[copies] - unwelded[originals]).max() > 1e-3  # what welding fixes
+    flat = ts.smooth_normals(normals, np.empty((0, 2), int), 5)
+    assert flat == pytest.approx(normals)  # no edges: nothing to average with
+    opposite = ts.smooth_normals(np.array([[0, 0, 1.0], [0, 0, -1.0]]), np.array([[0, 1]]), 1)
+    assert opposite[:, 2] == pytest.approx([1.0, -1.0])  # cancels out: keep the original
 
 
 def test_grid_regress_local_means():

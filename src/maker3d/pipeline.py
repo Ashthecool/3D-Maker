@@ -64,9 +64,12 @@ class ToonSettings:
     res: int = 1024
     samples: int = 16
     frames: int = 96  # turntable length at 24 fps
+    hold: int = 2  # frames per pose: 2 = on twos, 3 = on threes (#22)
+    ease: float = 0.3  # linger on the front/back views; 0 = even spin
     turntable: bool = True
     background: str = "#ffffff"
     transparent: bool = False
+    normal_smooth: float = 0.02  # blur shading normals for cleaner shadows; 0 = off (#23)
     projection: bool = True  # put the crisp Anima image on front-facing surfaces
     color_match: bool = True  # recolour TRELLIS.2's darker texture to the image (#24)
 
@@ -76,6 +79,8 @@ class ToonSettings:
         args = ["--glb", str(glb), "--out", str(out), "--style", self.style]
         args += ["--bands", str(self.bands), "--res", str(self.res)]
         args += ["--samples", str(self.samples), "--frames", str(self.frames)]
+        args += ["--hold", str(self.hold), "--ease", str(self.ease)]
+        args += ["--normal-smooth", str(self.normal_smooth)]
         args += ["--background", self.background]
         args += ["--outline", str(self.outline)] if self.outline > 0 else ["--no-outline"]
         if not self.turntable:
