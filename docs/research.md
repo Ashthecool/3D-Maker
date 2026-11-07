@@ -47,6 +47,8 @@ What this pipeline can automate (it has no hand-authored data):
   - Done (#21): one cool tint turned skin shadows mauve. The tint now fades out as the base colour gets more saturated: colourful parts darken in their own hue (skin goes rosy, red goes crimson), greyish parts (silver hair, white, black) take the cool tint. Then the saturation is raised ×1.35. Tint, saturation, hue shift and strength are ToonShade inputs.
 - Turntable timing on twos or threes.
   - Done (#22): `--hold 2|3` keys a new pose every N frames (constant interpolation) and `--ease` lingers on the front and back views.
+
+![Toon shading before and after #21 and #23: Cycles stills of two TRELLIS.2 characters](img/toon-shading-before-after.jpg)
 - Optional Freestyle lines for creases. Freestyle is CPU-based, so it works with headless Cycles. Grease Pencil Line Art needs the GPU draw engine, like EEVEE.
 - The Anima image's own line art already survives into the TRELLIS.2 texture bake.
 
