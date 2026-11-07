@@ -22,6 +22,31 @@
 - Reference: Vertex Arcade, "Making 3D Look Like 2D in Blender" (https://www.youtube.com/watch?v=eHddD5OfuwI).
 - Headless EEVEE on Linux needs OpenGL/EGL and is unreliable in containers. Cycles GPU works headless, so the shader avoids EEVEE-only nodes.
 
+### Guilty Gear Xrd (reference for "perfect anime" 3D)
+Videos the owner shared: Noggi, "I Studied How Guilty Gear Makes 3D Look Perfectly 2D" (https://www.youtube.com/watch?v=tWcaQ3gCbUU). Bran Sculpts, "Making an Anime character in 3D!" (https://www.youtube.com/watch?v=AWocxbVD3CE).
+
+The primary source is Junya Motomura's GDC 2015 talk "GuiltyGearXrd's Art Style: The X Factor Between 2D and 3D". The handout PDF on ggxrd.com refused connections (2026-11-07), so the points below come from a summary of the talk (videohighlight.com/v/yhGjCzxJV3E):
+- "Kill everything 3D". A 2D look comes from hand-made decisions, not from physically correct results.
+- **Edited vertex normals**: automatic normals don't give clean anime shadow shapes, faces above all. Normals are kept at unit length.
+- **Two colour textures**: base (lit) and tint (shadow), so every pixel has its own shadow colour. No specular map.
+- **Vertex colours (RGBA)** drive the lighting threshold (shadow bias) and the outline. Self-shadowing was dropped as uncontrollable; shadow areas are painted instead.
+- **Inverted-hull outline**, controlled per vertex. **Inner lines** are drawn into textures, with the UV layout set up so the lines stay sharp up close.
+- **Limited animation**: every frame is a key pose (no smooth in-betweens). Models are deformed per pose.
+- **Fixed character light rig**, independent of stage lighting. Textures are point sampled.
+
+Bran Sculpts' Blender workflow (80.lv interview, 2024-03-12):
+- Emission material.
+- Grease Pencil **Line Art** modifier for the outlines.
+- Edges marked with "Mark Freestyle" for extra inner lines.
+- Hand-painted ink lines mixed into the emission colour.
+
+What this pipeline can automate (it has no hand-authored data):
+- Smooth or transfer shading normals from a simplified copy, for cleaner cel shapes. This stands in for hand-edited normals.
+- Derive a per-pixel shadow colour from the base texture (a hue-shifted, more saturated darker tone) instead of one flat tint.
+- Turntable timing on twos or threes.
+- Optional Freestyle lines for creases. Freestyle is CPU-based, so it works with headless Cycles. Grease Pencil Line Art needs the GPU draw engine, like EEVEE.
+- The Anima image's own line art already survives into the TRELLIS.2 texture bake.
+
 ## Colab Pro
 - L4 (24 GB) ≈ 1.7–2 CU/h; A100 ≈ 11–15 CU/h; Pro = 100 CU/month. GPU type is not guaranteed.
 
