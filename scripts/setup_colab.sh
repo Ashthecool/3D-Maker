@@ -69,6 +69,28 @@ if [ "$SKIP_BLENDER" = 0 ]; then
   fi
   ln -sf "$BLENDER_DIR/blender" /usr/local/bin/blender
   blender --version | head -1
+
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    # Cycles' GPU kernels are JIT-compiled on first use (~8 min on an A100). Restore the
+    # cache from Drive if a previous session saved one, then warm it up in the background.
+    step "Cycles GPU kernels (background warm-up)"
+    gpu_key="$(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader | head -1 | tr -c 'A-Za-z0-9.\n' '_')"
+    drive_cache="$(cfg DRIVE_KERNEL_CACHE_DIR)/$gpu_key"
+    optix_cache="/var/tmp/OptixCache_$(id -un)"
+    if [ -d "$drive_cache/ComputeCache" ]; then
+      mkdir -p ~/.nv && cp -r "$drive_cache/ComputeCache" ~/.nv/
+      [ -d "$drive_cache/OptixCache" ] && cp -r "$drive_cache/OptixCache/." "$optix_cache/" 2>/dev/null || true
+      echo "restored kernel cache from $drive_cache"
+    fi
+    save_cmd=":"
+    if [ -d "$(dirname "$(cfg DRIVE_ROOT)")" ]; then  # Drive is mounted
+      save_cmd="mkdir -p '$drive_cache/OptixCache' && cp -r ~/.nv/ComputeCache '$drive_cache/' && cp -r '$optix_cache/.' '$drive_cache/OptixCache/'"
+    fi
+    nohup bash -c "blender -b --factory-startup -P '$REPO_DIR/src/maker3d/blender/warm_gpu.py' \
+      > /content/blender_warm.log 2>&1; $save_cmd; echo WARM_DONE >> /content/blender_warm.log" \
+      >/dev/null 2>&1 &
+    echo "warming in the background; see /content/blender_warm.log (ends with WARM_DONE)"
+  fi
 fi
 
 step "Done in $(( $(date +%s) - t0 ))s"

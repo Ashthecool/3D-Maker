@@ -91,7 +91,10 @@ COMFYUI_URL = "http://127.0.0.1:8188"
 COMFYUI_MIN_VERSION = "0.34.0"  # first release with native TRELLIS.2 nodes
 COMFYUI_REPO = "https://github.com/Comfy-Org/ComfyUI"
 COMFYUI_REF = "v0.44.0"  # pinned release (2026-11-04)
-DRIVE_JOBS_DIR = "/content/drive/MyDrive/3D-Maker/jobs"
+DRIVE_ROOT = "/content/drive/MyDrive/3D-Maker"
+DRIVE_JOBS_DIR = f"{DRIVE_ROOT}/jobs"
+# Cycles GPU kernel JIT cache, kept on Drive so a fresh VM skips the ~8 min compile.
+DRIVE_KERNEL_CACHE_DIR = f"{DRIVE_ROOT}/cache/gpu-kernels"
 BLENDER_VERSION = "4.5.10"
 BLENDER_DIR = f"/content/blender-{BLENDER_VERSION}-linux-x64"
 BLENDER_URL = (
