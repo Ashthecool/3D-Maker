@@ -12,7 +12,8 @@ A Google Colab Pro tool: prompt → Anima Turbo v1.1 (ComfyUI) → BiRefNet + TR
 ## Layout
 - `src/maker3d/config.py`: model files (HF repo + path + ComfyUI subfolder), defaults.
 - `src/maker3d/comfy_client.py`: ComfyUI HTTP API (`/prompt`, `/history`, `/view`).
-- `src/maker3d/workflows/*.api.json`: API-format workflows exported from the pinned ComfyUI.
+- `src/maker3d/workflows.py`: ComfyUI API-format graphs built in Python (Anima t2i, TRELLIS.2 i2m), validated against ComfyUI v0.44.0. See `docs/workflows.md`.
+- `src/maker3d/download.py`, `src/maker3d/runtime.py`: model downloads and the headless ComfyUI server.
 - `src/maker3d/blender/toon_scene.py`: runs inside Blender (`blender -b -P ... -- args`).
 - `notebooks/3D_Maker.ipynb`: thin launcher. Logic lives in `src/`, not in cells.
 
