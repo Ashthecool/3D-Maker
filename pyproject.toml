@@ -1,0 +1,43 @@
+[project]
+name = "maker3d"
+version = "0.1.0"
+description = "Prompt -> Anima Turbo v1.1 anime image -> TRELLIS.2 3D model -> Blender toon render that looks 2D. Runs on Google Colab."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+# Installed on Colab only.
+colab = [
+    "gradio>=5.0",
+    "huggingface_hub[hf_transfer]>=0.34",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "pytest>=8",
+    "nbformat>=5.10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maker3d"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+# Colab "#@title" form lines must stay verbatim; notebook JSON is validated by tests.
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

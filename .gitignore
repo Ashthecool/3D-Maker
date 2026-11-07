@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Model weights and generated assets (never commit these)
+models/
+outputs/
+jobs/
+*.safetensors
+*.gguf
+*.ckpt
+*.glb
+*.blend
+*.blend1
+*.mp4
+
+# Colab / Jupyter
+.ipynb_checkpoints/
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db
