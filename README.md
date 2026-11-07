@@ -5,7 +5,7 @@ Type a prompt, get an anime character as a **3D model that looks 2D**.
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Ashthecool/3D-Maker/blob/main/notebooks/3D_Maker.ipynb)
 [![CI](https://github.com/Ashthecool/3D-Maker/actions/workflows/ci.yml/badge.svg)](https://github.com/Ashthecool/3D-Maker/actions/workflows/ci.yml)
 
-> **Status:** early development. Track progress on the [project board](https://github.com/Ashthecool?tab=projects) and in [issues](https://github.com/Ashthecool/3D-Maker/issues).
+> **Status:** early development. Track progress on the [project board](https://github.com/users/Ashthecool/projects/1) and in [issues](https://github.com/Ashthecool/3D-Maker/issues).
 
 ## How it works
 
