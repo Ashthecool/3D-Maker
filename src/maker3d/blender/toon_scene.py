@@ -28,9 +28,14 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+if __package__ in (None, ""):  # run by Blender as a script: rig.py sits next to it
+    sys.path.insert(0, str(Path(__file__).parent))
+
 STYLES = ("flat", "cel", "cel_rim")
 LIGHT_DIR = (-0.45, -0.65, 0.62)  # from camera-left, front and above (Blender: -Y is front)
 SHADOW_TINT = (0.62, 0.58, 0.78)  # bluish-purple shadow multiplier
+# Ink: dark warm charcoal rather than pure black (anime lines are rarely pure black).
+INK = (0.016, 0.011, 0.013)  # scene-linear, about sRGB #231b1f
 SHADOW_SATURATION = 1.35  # shadows are richer than the lit colour, not greyer (#21)
 # Base colours at least this saturated keep their own hue in shadow (skin goes rosy, red
 # goes crimson); greyer ones (silver, white, black) take the cool SHADOW_TINT instead.
@@ -102,18 +107,13 @@ def outline_thickness(height: float, factor: float) -> float:
     return max(height, 1e-6) * factor
 
 
-def parse_args(argv: list[str]) -> argparse.Namespace:
-    """Parse the arguments after ``--`` on Blender's command line."""
-    if "--" in argv:
-        argv = argv[argv.index("--") + 1 :]
-    p = argparse.ArgumentParser(prog="toon_scene.py", description=__doc__.split("\n")[0])
-    p.add_argument("--glb", required=True, type=Path)
-    p.add_argument("--out", required=True, type=Path)
+def add_render_args(p: argparse.ArgumentParser) -> None:
+    """Look and output options shared by toon_scene.py and character.py."""
     p.add_argument("--style", choices=STYLES, default="cel")
     p.add_argument("--bands", type=int, choices=(2, 3), default=2)
     p.add_argument("--outline", type=float, default=0.004, help="fraction of model height")
     p.add_argument("--no-outline", action="store_true")
-    p.add_argument("--res", type=int, default=1024)
+    p.add_argument("--res", type=int, default=1024, help="image height in pixels")
     p.add_argument("--samples", type=int, default=16)
     p.add_argument("--frames", type=int, default=96, help="turntable length at 24 fps")
     p.add_argument(
@@ -123,6 +123,25 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--ease", type=float, default=0.3, help="linger on the front/back views (0 = even spin)"
     )
     p.add_argument("--no-turntable", action="store_true")
+    p.add_argument("--transparent", action="store_true", help="transparent background")
+    p.add_argument("--background", default="#ffffff")
+    p.add_argument("--engine", choices=("CYCLES", "EEVEE"), default="CYCLES")
+    p.add_argument("--cpu", action="store_true", help="render Cycles on the CPU")
+    p.add_argument(
+        "--anim-view", type=float, default=25.0, help="camera angle (deg) for the animations"
+    )
+    p.add_argument("--pose", default="", help="pose for the stills (a name in poses.json)")
+    p.add_argument("--animations", default="", help="comma-separated animation names or JSON files")
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    """Parse the arguments after ``--`` on Blender's command line."""
+    if "--" in argv:
+        argv = argv[argv.index("--") + 1 :]
+    p = argparse.ArgumentParser(prog="toon_scene.py", description=__doc__.split("\n")[0])
+    p.add_argument("--glb", required=True, type=Path)
+    p.add_argument("--out", required=True, type=Path)
+    add_render_args(p)
     p.add_argument(
         "--normal-smooth",
         type=float,
@@ -132,10 +151,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--yaw", type=float, default=0.0, help="extra rotation (deg) so the model faces -Y"
     )
-    p.add_argument("--transparent", action="store_true", help="transparent background")
-    p.add_argument("--background", default="#ffffff")
-    p.add_argument("--engine", choices=("CYCLES", "EEVEE"), default="CYCLES")
-    p.add_argument("--cpu", action="store_true", help="render Cycles on the CPU")
     p.add_argument(
         "--source-image",
         type=Path,
@@ -147,6 +162,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="keep TRELLIS.2's own (darker) texture colours away from the front",
     )
+    p.add_argument("--rig", action="store_true", help="add a skeleton (poses, animations)")
+    p.add_argument("--parts", action="store_true", help="with --rig: one object per body part")
     return p.parse_args(argv)
 
 
@@ -582,7 +599,9 @@ def main(argv: list[str]) -> None:
     meshes = [o for o in scene.objects if o.type == "MESH"]
     if not meshes:
         raise SystemExit(f"no meshes in {args.glb}")
-    smoothed = add_smooth_normals(meshes, args.normal_smooth)
+    # A rig deforms the mesh: smoothed normals then go in as custom normals, which follow
+    # the pose, instead of the toon_normal attribute, which would stay in the rest pose.
+    smoothed = add_smooth_normals(meshes, args.normal_smooth, as_custom=args.rig)
     proj_image, color_matched = None, False
     if args.source_image:
         # Project in the pose the camera sees at yaw. glTF imports use quaternion rotation,
@@ -619,6 +638,9 @@ def main(argv: list[str]) -> None:
         o.parent = pivot
     base_yaw = math.radians(args.yaw)
     pivot.rotation_euler = (0.0, 0.0, base_yaw)
+    rig = None
+    if args.rig:
+        rig, meshes = rig_model(bpy, meshes, pivot, height, parts=args.parts)
 
     # --- materials ------------------------------------------------------------------
     toon_group = build_toon_group(bpy, args.style, args.bands, smooth_normals=smoothed)
@@ -632,7 +654,121 @@ def main(argv: list[str]) -> None:
         for o in meshes:
             add_outline(o, outline_mat, thickness)
 
-    # --- world, colour management, camera -------------------------------------------
+    anims = [a.strip() for a in args.animations.split(",") if a.strip()]
+    if rig is not None:
+        import rig as rig_module
+
+        if args.pose:
+            rig_module.apply_pose(rig, rig_module.resolve_pose(args.pose))
+        rig_module.embed(bpy)
+    render_outputs(
+        bpy, scene, pivot, meshes, args, out, base_yaw=base_yaw, rig=rig, animations=anims
+    )
+
+
+def rig_model(bpy, meshes, pivot, height: float, parts: bool = False):
+    """Skeleton + skin weights for an A-pose TRELLIS.2 model (rig.py); optionally split it
+    into one object per body part. Returns (rig or None, meshes)."""
+    import numpy as np
+    import rig as R
+
+    bpy.context.view_layer.update()
+    pts, tris, offset = [], [], 0
+    for o in meshes:
+        me = o.data
+        n = len(me.vertices)
+        co = np.empty(n * 3, np.float32)
+        me.vertices.foreach_get("co", co)
+        m = np.array(o.matrix_world, dtype=np.float64)
+        pts.append(co.reshape(n, 3) @ m[:3, :3].T + m[:3, 3])
+        me.calc_loop_triangles()
+        t = np.empty(len(me.loop_triangles) * 3, np.int64)
+        me.loop_triangles.foreach_get("vertices", t)
+        tris.append(t.reshape(-1, 3) + offset)
+        offset += n
+    try:
+        grid = R.voxelize(np.concatenate(pts), np.concatenate(tris), height / 160)
+        joints = R.find_joints(grid, height)
+    except R.RigError as exc:
+        print(f"[toon] no rig: {exc}", flush=True)
+        return None, meshes
+    rig = R.build_rig(bpy, joints, height)
+    rig.parent = pivot
+    rig.matrix_parent_inverse = pivot.matrix_world.inverted()
+    weights = R.skin(bpy, rig, meshes, height)
+    if parts and len(meshes) == 1:
+        meshes = R.split_parts(bpy, meshes[0], *weights[meshes[0].name])
+    print(f"[toon] rigged: {len(meshes)} object(s)", flush=True)
+    return rig, meshes
+
+
+# --------------------------------------------------------------------------------------
+# Output: world, camera, stills, turntable, animations, .blend (shared with character.py)
+# --------------------------------------------------------------------------------------
+def frame_bounds(xz_min, xz_max, margin: float = 0.06) -> tuple[float, float, float, float]:
+    """(centre x, centre z, ortho scale, width/height) for a camera looking along +Y.
+
+    ``xz_min``/``xz_max``: the picture-plane box (x right, z up) that must fit, with
+    ``margin`` (fraction of the larger side) left free around it. Portrait or square.
+    """
+    w = max(xz_max[0] - xz_min[0], 1e-6)
+    h = max(xz_max[1] - xz_min[1], 1e-6)
+    pad = margin * max(w, h)
+    w, h = w + 2 * pad, h + 2 * pad
+    aspect = min(max(w / h, 0.5), 1.0)
+    w = max(w, h * aspect)
+    h = max(h, w / aspect)
+    cx = (xz_min[0] + xz_max[0]) / 2
+    cz = (xz_min[1] + xz_max[1]) / 2
+    return cx, cz, max(w, h), aspect
+
+
+def even(n: float) -> int:
+    return max(2, int(round(n / 2)) * 2)
+
+
+def world_points(bpy, objects, step: int = 1):
+    """World positions of the evaluated (posed, deformed) vertices of ``objects``."""
+    import numpy as np
+
+    deps = bpy.context.evaluated_depsgraph_get()
+    pts = []
+    for o in objects:
+        ev = o.evaluated_get(deps)
+        me = ev.to_mesh()
+        co = np.empty(len(me.vertices) * 3, np.float32)
+        me.vertices.foreach_get("co", co)
+        m = np.array(ev.matrix_world, dtype=np.float64)
+        pts.append(co.reshape(-1, 3)[::step] @ m[:3, :3].T + m[:3, 3])
+        ev.to_mesh_clear()
+    return np.concatenate(pts) if pts else np.zeros((0, 3))
+
+
+def aim_camera(scene, cam, centre_x: float, centre_z: float, scale: float, aspect, res: int):
+    cam.data.ortho_scale = scale
+    cam.location.x, cam.location.z = centre_x, centre_z
+    r = scene.render
+    r.resolution_y = res
+    r.resolution_x = even(res * aspect)
+
+
+def render_outputs(
+    bpy,
+    scene,
+    pivot,
+    meshes,
+    args,
+    out: Path,
+    base_yaw: float = 0.0,
+    rig=None,
+    animations=(),
+    blend_name: str = "toon.blend",
+) -> None:
+    """World, camera, stills, turntable, animations (with ``rig``) and the packed .blend."""
+    import numpy as np
+
+    out = Path(out)
+    (out / "stills").mkdir(parents=True, exist_ok=True)
     world = bpy.data.worlds.new("ToonWorld")
     scene.world = world
     world.use_nodes = True
@@ -643,20 +779,24 @@ def main(argv: list[str]) -> None:
     scene.view_settings.look = "None"
     scene.render.film_transparent = args.transparent
 
+    # Portrait framing that fits the model at every turntable angle: its height, and
+    # twice its largest distance from the turning axis.
+    pts = world_points(bpy, meshes, step=7)
+    radius = float(np.sqrt(pts[:, 0] ** 2 + pts[:, 1] ** 2).max())
+    zlo, zhi = float(pts[:, 2].min()), float(pts[:, 2].max())
+    cx, cz, scale, aspect = frame_bounds((-radius, zlo), (radius, zhi), margin=0.04)
     cam_data = bpy.data.cameras.new("ToonCam")
     cam_data.type = "ORTHO"
-    cam_data.ortho_scale = max(height, size.x, size.y) * 1.12
     cam = bpy.data.objects.new("ToonCam", cam_data)
     scene.collection.objects.link(cam)
-    dist = max(size) * 4 + 1.0
-    cam.location = (0.0, -dist, height / 2)
+    dist = 4 * max(zhi - zlo, 2 * radius) + 1.0
+    cam.location = (0.0, -dist, 0.0)
     cam.rotation_euler = (math.radians(90), 0.0, 0.0)
     cam_data.clip_end = dist * 3
     scene.camera = cam
+    aim_camera(scene, cam, cx, cz, scale, aspect, args.res)
 
-    # --- render settings ------------------------------------------------------------
     r = scene.render
-    r.resolution_x = r.resolution_y = args.res
     r.resolution_percentage = 100
     r.fps = 24
     r.image_settings.file_format = "PNG"
@@ -674,23 +814,75 @@ def main(argv: list[str]) -> None:
     # --- turntable, a new pose every --hold frames ----------------------------------
     scene.frame_start, scene.frame_end = 1, args.frames
     key_turntable(pivot, base_yaw, turntable_keys(args.frames, args.hold, args.ease))
+    turntable_action = pivot.animation_data.action
+    turntable_action.name = "Turntable"
+    turntable_action.use_fake_user = True
     if not args.no_turntable:
         frames_dir = out / "frames"
-        frames_dir.mkdir(exist_ok=True)
-        for old in frames_dir.glob("f_*.png"):  # a re-render with another --hold
-            old.unlink()
-        scene.frame_step = args.hold  # only the frames that change
-        r.filepath = str(frames_dir / "f_")
-        bpy.ops.render.render(animation=True)
+        render_frames(bpy, scene, frames_dir, args.hold)
+        encode_mp4(frames_dir, out / "turntable.mp4", args.background, args.hold, bpy=bpy)
+
+    # --- animations (rigged characters) ---------------------------------------------
+    first = None
+    if rig is not None and animations:
+        import rig as rig_module
+
+        stills_framing = (cam.location.x, cam.location.z, cam_data.ortho_scale, r.resolution_x)
+        pivot.animation_data.action = None
+        for name in animations:
+            anim = rig_module.load_animation(name)
+            first = first or anim
+            render_animation(bpy, scene, cam, pivot, rig, meshes, anim, out, args, base_yaw)
+        cam.location.x, cam.location.z, cam_data.ortho_scale, r.resolution_x = stills_framing
+        r.resolution_y = args.res
+        # The file opens on the first animation; the turntable action stays in the file.
+        rig.animation_data.action = bpy.data.actions[first.name]
+        pivot.rotation_euler.z = base_yaw + math.radians(args.anim_view)
+        scene.frame_start, scene.frame_end = 1, first.frames
         scene.frame_step = 1
-        encode_mp4(frames_dir, out / "turntable.mp4", args.background, args.hold)
 
     # --- save -----------------------------------------------------------------------
     scene.frame_set(1)
     r.filepath = "//render/"
     bpy.ops.file.pack_all()
-    bpy.ops.wm.save_as_mainfile(filepath=str(out / "toon.blend"), compress=True)
-    print(f"[toon] saved {out / 'toon.blend'}", flush=True)
+    bpy.ops.wm.save_as_mainfile(filepath=str(out / blend_name), compress=True)
+    print(f"[toon] saved {out / blend_name}", flush=True)
+
+
+def render_frames(bpy, scene, frames_dir: Path, hold: int) -> None:
+    """Render frame_start..frame_end, only every ``hold``-th frame, as frames_dir/f_####.png."""
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    for old in frames_dir.glob("f_*.png"):  # a re-render with another --hold
+        old.unlink()
+    scene.frame_step = hold  # only the frames that change
+    scene.render.filepath = str(frames_dir / "f_")
+    bpy.ops.render.render(animation=True)
+    scene.frame_step = 1
+
+
+def render_animation(bpy, scene, cam, pivot, rig, meshes, anim, out: Path, args, base_yaw):
+    """Key ``anim`` on the rig, frame it from --anim-view and render animations/<name>.mp4."""
+    import numpy as np
+    import rig as rig_module
+
+    rig_module.key_animation(bpy, rig, anim)
+    view = anim.camera.get("view", args.anim_view)
+    pivot.rotation_euler.z = base_yaw + math.radians(view)
+    lo, hi = np.array([np.inf, np.inf]), np.array([-np.inf, -np.inf])
+    for frame in range(1, anim.frames + 1, max(anim.hold, 3)):
+        scene.frame_set(frame)
+        pts = world_points(bpy, meshes, step=11)[:, [0, 2]]
+        lo, hi = np.minimum(lo, pts.min(axis=0)), np.maximum(hi, pts.max(axis=0))
+    lo[1] = min(lo[1], 0.0)  # keep the floor line in view
+    cx, cz, scale, aspect = frame_bounds(lo, hi)
+    aim_camera(scene, cam, cx, cz, scale, aspect, args.res)
+    scene.frame_start, scene.frame_end = 1, anim.frames
+    frames_dir = out / "animations" / f"{anim.name}_frames"
+    render_frames(bpy, scene, frames_dir, anim.hold)
+    encode_mp4(
+        frames_dir, out / "animations" / f"{anim.name}.mp4", args.background, anim.hold, bpy=bpy
+    )
+    print(f"[toon] animation {anim.name}: {anim.frames} frames on {anim.hold}s", flush=True)
 
 
 def _group_input(g, name: str, socket_type: str, default, lo=None, hi=None, tip: str = ""):
@@ -799,7 +991,19 @@ def build_toon_group(bpy, style: str, bands: int, smooth_normals: bool = False):
     for band in stops[1:]:
         e = elems.new(band.position)
         e.color = (band.light,) * 3 + (1.0,)
-    links.new(half.outputs["Result"], ramp.inputs["Fac"])
+    # Per-object shadow bias (custom property "toon_shadow_bias"): a face stays lit
+    # longer than the body, the way anime draws few shadows on faces.
+    bias = n.new("ShaderNodeAttribute")
+    bias.attribute_type = "OBJECT"
+    bias.attribute_name = "toon_shadow_bias"
+    bias.label = "Object shadow bias"
+    bias.location = (-450, -500)
+    biased = n.new("ShaderNodeMath")
+    biased.operation = "ADD"
+    biased.location = (-300, -420)
+    links.new(half.outputs["Result"], biased.inputs[0])
+    links.new(bias.outputs["Fac"], biased.inputs[1])
+    links.new(biased.outputs["Value"], ramp.inputs["Fac"])
 
     # Shadow colour from the base colour (see shadow_color() for the same maths in Python)
     sep = n.new("ShaderNodeSeparateColor")
@@ -926,9 +1130,26 @@ def no_light_sampling(mat) -> None:
         cycles_settings.emission_sampling = "NONE"
 
 
-def build_outline_material(bpy):
-    """Black where the hull faces away from its (flipped) normals, transparent elsewhere."""
-    mat = bpy.data.materials.new("ToonOutline")
+def line_color(rgb_linear, value: float = 0.3, grey_hue: float = 0.72):
+    """Line colour for a fill colour (scene-linear in and out): the same hue, much darker
+    and a little richer, the way anime colours lines (skin gets dark reddish-brown lines).
+    Greyish fills (white, silver, black) get a cool dark purple-grey instead.
+    """
+    import colorsys
+
+    srgb = [c * 12.92 if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055 for c in rgb_linear]
+    h, s, v = colorsys.rgb_to_hsv(*[min(max(c, 0.0), 1.0) for c in srgb])
+    if s < 0.12:
+        h, s = grey_hue, 0.22
+    else:
+        s = min(1.0, s * 1.15 + 0.08)
+    out = colorsys.hsv_to_rgb(h, s, v * value + 0.02)
+    return tuple(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in out)
+
+
+def build_outline_material(bpy, color=INK, name: str = "ToonOutline"):
+    """Ink where the hull faces away from its (flipped) normals, transparent elsewhere."""
+    mat = bpy.data.materials.new(name)
     mat.use_nodes = True
     mat.use_backface_culling = True  # EEVEE viewport nicety; Backfacing mask does the real work
     nt = mat.node_tree
@@ -940,7 +1161,7 @@ def build_outline_material(bpy):
     geo.location = (-300, 200)
     ink = nt.nodes.new("ShaderNodeEmission")
     ink.location = (-300, 0)
-    ink.inputs["Color"].default_value = (0.0, 0.0, 0.0, 1.0)
+    ink.inputs["Color"].default_value = (*color, 1.0)
     clear = nt.nodes.new("ShaderNodeBsdfTransparent")
     clear.location = (-300, -150)
     mix = nt.nodes.new("ShaderNodeMixShader")
@@ -970,11 +1191,12 @@ def add_outline(obj, outline_mat, thickness: float) -> None:
     mod.material_offset = len(obj.data.materials) - 1
 
 
-def add_smooth_normals(meshes, strength: float) -> bool:
+def add_smooth_normals(meshes, strength: float, as_custom: bool = False) -> bool:
     """Write blurred vertex normals to a ``toon_normal`` attribute (object space).
 
     ``strength``: blur radius as a fraction of the model height; 0 turns it off. Returns
-    whether the attribute was written (the ToonShade group only reads it then).
+    whether the attribute was written (the ToonShade group only reads it then). With
+    ``as_custom`` they become the mesh's custom normals instead (they follow a rig).
     """
     import time
 
@@ -1004,16 +1226,19 @@ def add_smooth_normals(meshes, strength: float) -> bool:
         edge_length = float(lengths[lengths > 0].mean()) if lengths.size else 0.0
         iterations = smoothing_iterations(strength * local_height, edge_length)
         smooth = smooth_normals(no.reshape(n, 3), edges, iterations, weld, co)
-        attr = me.attributes.get("toon_normal") or me.attributes.new(
-            "toon_normal", "FLOAT_VECTOR", "POINT"
-        )
-        attr.data.foreach_set("vector", smooth.astype(np.float32).ravel())
+        if as_custom:
+            me.normals_split_custom_set_from_vertices(smooth.tolist())
+        else:
+            attr = me.attributes.get("toon_normal") or me.attributes.new(
+                "toon_normal", "FLOAT_VECTOR", "POINT"
+            )
+            attr.data.foreach_set("vector", smooth.astype(np.float32).ravel())
         print(
             f"[toon] {o.name}: smoothed normals, {iterations} passes over {n} vertices "
             f"({n - int(weld.max()) - 1} seam duplicates welded, {time.time() - t0:.1f}s)",
             flush=True,
         )
-    return True
+    return not as_custom
 
 
 def add_front_projection(
@@ -1333,10 +1558,21 @@ def key_turntable(pivot, base_yaw: float, keys: list[tuple[int, float]]) -> None
             kp.interpolation = "CONSTANT"
 
 
-def encode_mp4(frames_dir: Path, dest: Path, background: str, hold: int = 2) -> None:
+def encode_mp4(frames_dir: Path, dest: Path, background: str, hold: int = 2, bpy=None) -> None:
+    """MP4 from frames_dir/f_*.png where every frame stands for ``hold`` video frames.
+
+    Uses ffmpeg when it is on PATH (Colab), otherwise Blender's own video writer.
+    """
+    frames = sorted(Path(frames_dir).glob("f_*.png"))
+    if not frames:
+        return
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
-        print("[toon] ffmpeg not found; turntable frames kept in", frames_dir, flush=True)
+        if bpy is None:
+            print("[toon] ffmpeg not found; frames kept in", frames_dir, flush=True)
+            return
+        encode_with_blender(bpy, frames, dest, hold)
+        print(f"[toon] video -> {dest}", flush=True)
         return
     # Only every ``hold``-th frame is rendered: play them at 24/hold fps, output 24 fps,
     # so each pose lasts ``hold`` video frames.
@@ -1347,7 +1583,33 @@ def encode_mp4(frames_dir: Path, dest: Path, background: str, hold: int = 2) -> 
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(dest),
     ]  # fmt: skip
     subprocess.run(cmd, check=True)
-    print(f"[toon] turntable -> {dest}", flush=True)
+    print(f"[toon] video -> {dest}", flush=True)
+
+
+def encode_with_blender(bpy, frames: list, dest: Path, hold: int) -> None:
+    """Encode PNG frames to H.264 MP4 with the sequencer of a temporary scene."""
+    first = bpy.data.images.load(str(frames[0]))
+    w, h = first.size
+    bpy.data.images.remove(first)
+    scn = bpy.data.scenes.new("encode")
+    scn.sequence_editor_create()
+    strips = getattr(scn.sequence_editor, "strips", None) or scn.sequence_editor.sequences
+    strip = strips.new_image("frames", str(frames[0]), channel=1, frame_start=1)
+    for f in frames[1:]:
+        strip.elements.append(f.name)
+    strip.frame_final_duration = len(frames)
+    r = scn.render
+    r.resolution_x, r.resolution_y, r.resolution_percentage = w + w % 2, h + h % 2, 100
+    r.fps, r.fps_base = 24, float(hold)  # each picture lasts ``hold`` frames of 1/24 s
+    scn.frame_start, scn.frame_end = 1, len(frames)
+    scn.view_settings.view_transform = "Standard"
+    r.image_settings.file_format = "FFMPEG"
+    r.ffmpeg.format = "MPEG4"
+    r.ffmpeg.codec = "H264"
+    r.ffmpeg.constant_rate_factor = "HIGH"
+    r.filepath = str(dest)
+    bpy.ops.render.render(animation=True, scene=scn.name)
+    bpy.data.scenes.remove(scn)
 
 
 if __name__ == "__main__":

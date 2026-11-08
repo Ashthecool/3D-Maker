@@ -1,0 +1,16 @@
+{
+  "description": "Crouches, jumps with arms up, lands and recovers.",
+  "frames": 44,
+  "hold": 2,
+  "keys": [
+    {"frame": 1, "pose": "idle"},
+    {"frame": 9, "pose": "crouch"},
+    {"frame": 13, "pose": ["crouch", {"torso": {"move": [0, -0.015, -0.11]}, "upper_arm.L": {"raise": 20, "forward": -45}, "upper_arm.R": {"raise": 20, "forward": -45}}]},
+    {"frame": 17, "pose": ["jump", {"root": {"move": [0, 0, 0.09]}, "foot_ik.L": {"move": [0, 0, 0.0], "point": 40}, "foot_ik.R": {"move": [0, 0, 0.0], "point": 40}}]},
+    {"frame": 22, "pose": "jump"},
+    {"frame": 27, "pose": ["jump", {"root": {"move": [0, 0, 0.07]}, "foot_ik.L": {"move": [0, 0.01, 0.0], "point": 15}, "foot_ik.R": {"move": [0, 0.0, 0.0], "point": 15}, "upper_arm.L": {"raise": 120, "forward": 20}, "upper_arm.R": {"raise": 120, "forward": 20}}]},
+    {"frame": 31, "pose": ["crouch", {"torso": {"move": [0, -0.01, -0.12]}, "upper_arm.L": {"raise": 70, "forward": 25}, "upper_arm.R": {"raise": 70, "forward": 25}}]},
+    {"frame": 37, "pose": ["crouch", {"torso": {"move": [0, -0.005, -0.04]}}]},
+    {"frame": 44, "pose": "idle"}
+  ]
+}

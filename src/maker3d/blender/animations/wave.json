@@ -1,0 +1,16 @@
+{
+  "description": "Waves hello with the right hand.",
+  "frames": 48,
+  "loop": true,
+  "hold": 2,
+  "keys": [
+    {"frame": 1, "pose": "wave_out"},
+    {"frame": 7, "pose": "wave_in"},
+    {"frame": 13, "pose": "wave_out"},
+    {"frame": 19, "pose": "wave_in"},
+    {"frame": 25, "pose": "wave_out"},
+    {"frame": 31, "pose": "wave_in"},
+    {"frame": 37, "pose": "wave_out"},
+    {"frame": 43, "pose": "wave_in"}
+  ]
+}

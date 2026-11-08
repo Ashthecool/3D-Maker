@@ -1,0 +1,16 @@
+{
+  "description": "Throws both arms up with a little hop, then pumps a fist.",
+  "frames": 48,
+  "hold": 2,
+  "keys": [
+    {"frame": 1, "pose": "idle"},
+    {"frame": 7, "pose": ["crouch", {"torso": {"move": [0, 0, -0.05]}}]},
+    {"frame": 12, "pose": ["cheer", {"root": {"move": [0, 0, 0.05]}, "foot_ik.L": {"point": 30}, "foot_ik.R": {"point": 30}}]},
+    {"frame": 17, "pose": "cheer"},
+    {"frame": 23, "pose": ["cheer", {"torso": {"move": [0, 0, -0.02]}}]},
+    {"frame": 29, "pose": "victory"},
+    {"frame": 35, "pose": ["victory", {"upper_arm.R": {"raise": 140, "forward": 20}, "forearm.R": {"bend": 70}, "torso": {"move": [0, 0, -0.01]}}]},
+    {"frame": 41, "pose": "victory"},
+    {"frame": 48, "pose": "victory"}
+  ]
+}

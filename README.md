@@ -19,6 +19,16 @@ Everything runs on a single Colab GPU (A100 recommended; L4 is the cheaper optio
 `MyDrive/3D-Maker/jobs/<timestamp>/`. Open `toon.blend` in Blender 4.5 on your own PC to
 pose, tweak and re-render in EEVEE.
 
+## Characters you can pose and animate
+
+A toon character built **from scratch** in Blender, one clean object per body part (head, face, hair, torso, jacket, upper arms, forearms, hands, thighs, shins, feet). It comes with a skeleton, a pose language in plain words, and six animations on twos: idle, wave, walk, jump, cheer and dance.
+
+```bash
+python -m maker3d.pipeline --character out/girl          # on Colab, or locally with --blender PATH
+```
+
+TRELLIS.2 models can get the same skeleton (`ToonSettings(rig=True, parts=True, animations="wave")`). See [docs/rig.md](docs/rig.md) for the controls in Blender, the pose words and the animation format.
+
 ## Use it (once v1 is done)
 
 1. Click **Open in Colab** above.

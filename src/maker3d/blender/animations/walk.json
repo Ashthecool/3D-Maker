@@ -1,0 +1,13 @@
+{
+  "description": "A walk cycle in place (two steps).",
+  "frames": 32,
+  "loop": true,
+  "hold": 2,
+  "camera": {"view": 70},
+  "keys": [
+    {"frame": 1, "pose": "walk_contact"},
+    {"frame": 9, "pose": "walk_pass"},
+    {"frame": 17, "pose": "mirror:walk_contact"},
+    {"frame": 25, "pose": "mirror:walk_pass"}
+  ]
+}

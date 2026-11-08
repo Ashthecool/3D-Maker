@@ -278,3 +278,39 @@ def test_masks():
     fg = ts.background_mask(img)
     assert fg[6:14, 6:14].all() and not fg[0].any()
     assert ts.smoothstep(0.2, 0.6, np.array([0.0, 0.4, 1.0])) == pytest.approx([0.0, 0.5, 1.0])
+
+
+def test_frame_bounds_portrait_and_square():
+    cx, cz, scale, aspect = ts.frame_bounds((-0.25, 0.0), (0.25, 1.0), margin=0.0)
+    assert (cx, cz) == pytest.approx((0.0, 0.5)) and scale == pytest.approx(1.0)
+    assert aspect == pytest.approx(0.5)  # half as wide as tall
+    _, _, scale, aspect = ts.frame_bounds((-1.0, 0.0), (1.0, 1.0), margin=0.0)
+    assert aspect == 1.0 and scale == pytest.approx(2.0)  # never landscape: square
+    _, _, scale, aspect = ts.frame_bounds((-0.05, 0.0), (0.05, 1.0), margin=0.1)
+    assert aspect == 0.5 and scale == pytest.approx(1.2)  # never narrower than 1:2
+    assert ts.even(100.2) == 100 and ts.even(103.4) == 104 and ts.even(0) == 2
+
+
+def test_parse_args_rig_options():
+    args = ts.parse_args(["--glb", "m.glb", "--out", "o"])
+    assert not args.rig and not args.parts and args.anim_view == 25.0 and args.pose == ""
+    args = ts.parse_args(
+        ["--glb", "m.glb", "--out", "o", "--rig", "--parts", "--animations", "wave,jump"]
+    )
+    assert args.rig and args.parts and args.animations == "wave,jump"
+
+
+def test_line_color_is_a_darker_version_of_the_fill():
+    import colorsys
+
+    skin, red, white = ts.hex_to_rgb("#ffe2d2"), ts.hex_to_rgb("#c51f2c"), (1.0, 1.0, 1.0)
+    for fill in (skin, red, white, (0.0, 0.0, 0.0)):
+        line = ts.line_color(fill)
+        assert max(line) < 0.12 and all(c >= 0 for c in line)  # dark
+    sk = ts.line_color(skin)
+    assert sk[0] > sk[1] > sk[2]  # skin gets warm brown lines, not grey
+    r = ts.line_color(red)
+    assert r[0] > 4 * max(r[1:])  # red stays red
+    w = ts.line_color(white)
+    assert colorsys.rgb_to_hsv(*w)[0] == pytest.approx(0.72, abs=0.05)  # cool purple-grey
+    assert ts.INK != (0.0, 0.0, 0.0)  # default ink is charcoal, not pure black

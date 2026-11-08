@@ -1,0 +1,10 @@
+{
+  "description": "Standing and breathing, a slow sway.",
+  "frames": 48,
+  "loop": true,
+  "hold": 2,
+  "keys": [
+    {"frame": 1, "pose": "idle"},
+    {"frame": 25, "pose": ["idle", {"torso": {"move": [0.012, 0, -0.001]}, "chest": {"lean": -3, "bend": -2}, "head": {"lean": 6, "turn": 5}, "upper_arm.L": {"raise": 17, "forward": 4}, "upper_arm.R": {"raise": 17, "forward": 4}}]}
+  ]
+}

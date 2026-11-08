@@ -247,6 +247,12 @@ def test_toon_settings_match_the_blender_script(tmp_path):
     assert args.source_image is None
     raw = pl.ToonSettings(color_match=False).to_args(Path("m.glb"), Path("o"), image)
     assert toon_scene.parse_args(raw).no_color_match
+    assert not (args.rig or args.parts or args.pose or args.animations)  # no rig by default
+    rigged = pl.ToonSettings(rig=True, parts=True, pose="cheer", animations="wave,walk")
+    args = toon_scene.parse_args(rigged.to_args(Path("m.glb"), Path("o")))
+    assert args.rig and args.parts and args.pose == "cheer" and args.animations == "wave,walk"
+    loose = pl.ToonSettings(animations="wave").to_args(Path("m.glb"), Path("o"))
+    assert "--animations" not in loose  # animations need the rig
 
 
 def test_waits_for_kernel_warmup(make_pipe, tmp_path):
@@ -286,3 +292,17 @@ def test_cli_resume_redo(monkeypatch, make_pipe, tmp_path, job):
     assert json.loads((job.dir / "job.json").read_text())["toon_settings"]["style"] == "flat"
     with pytest.raises(SystemExit):
         pl.main([])
+
+
+def test_character_command_matches_the_blender_script(tmp_path):
+    from maker3d.blender import character
+
+    spec = tmp_path / "spec.json"
+    cmd = pl.character_cmd(
+        tmp_path / "out", spec, "wave,jump", blender="blender", extra=["--res", "512"]
+    )
+    assert cmd[:2] == ["blender", "-b"] and cmd[cmd.index("-P") + 1] == str(pl.CHARACTER_SCRIPT)
+    args = character.parse_args(cmd)
+    assert args.out == tmp_path / "out" and args.spec == spec
+    assert args.animations == "wave,jump" and args.res == 512
+    assert pl.character_cmd(tmp_path, animations="")[-2:] == ["--out", str(tmp_path)]

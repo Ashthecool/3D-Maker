@@ -14,7 +14,9 @@ A Google Colab Pro tool: prompt → Anima Turbo v1.1 (ComfyUI) → BiRefNet + TR
 - `src/maker3d/comfy_client.py`: ComfyUI HTTP API (`/prompt`, `/history`, `/view`).
 - `src/maker3d/workflows.py`: ComfyUI API-format graphs built in Python (Anima t2i, TRELLIS.2 i2m), validated against ComfyUI v0.44.0. See `docs/workflows.md`.
 - `src/maker3d/download.py`, `src/maker3d/runtime.py`: model downloads and the headless ComfyUI server.
-- `src/maker3d/blender/toon_scene.py`: runs inside Blender (`blender -b -P ... -- args`).
+- `src/maker3d/blender/toon_scene.py`: runs inside Blender (`blender -b -P ... -- args`). Its `render_outputs` (stills, turntable, animations, .blend) is shared with `character.py`.
+- `src/maker3d/blender/character.py`: the from-scratch toon character (one object per body part). `rig.py`: skeleton, pose language, auto-rig for TRELLIS.2 meshes. Poses are in `poses.json`; animations are in `animations/*.json`. See `docs/rig.md`.
+- To pose a character live through blender-mcp, open the `.blend` and run `exec(bpy.data.texts["toon_rig.py"].as_string())`, then `import toon_rig; toon_rig.pose(...)`.
 - `notebooks/3D_Maker.ipynb`: thin launcher. Logic lives in `src/`, not in cells.
 
 ## Commands

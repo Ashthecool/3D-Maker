@@ -100,6 +100,23 @@ Splitting the geometry does not fix the texture by itself: each part is still te
 
 Found on the way: `toon_scene.py --yaw` did not turn the model for the projection, because glTF imports use quaternion rotation. Fixed by turning the world matrix.
 
+## Posing and editable parts (2026-11-08)
+The owner wants to pose each limb, animate the character, and edit every part on its own.
+
+- **Auto-rig for TRELLIS.2 meshes** (`rig.py`, `toon_scene.py --rig`):
+  - Joints come from the solid voxel grid. Legs are the two runs of the front silhouette, followed upwards. The neck is the most recessed point of the front profile. Arms are followed in from the hand tips, and the wrist is where the thin hand meets the wider sleeve.
+  - Weights are geodesic voxel binding: distances to each bone *through the inside of the model*, then 1/d⁴, up to 4 bones. On a 414k-vertex mesh this takes 10–12 s on a PC CPU.
+  - It works on all three test models, but the clay renders show how lumpy TRELLIS.2 geometry is under its texture. Cutting that mesh into parts gave uneven pieces.
+- **From-scratch character instead** (`character.py`): the owner asked for "a completely new one from scratch".
+  - Every body part is a clean, closed mesh, modelled in code. Limbs are capsules whose round ends meet in a ball at the joint. Hair is a cap plus flat, tapering locks (the anime "hair card" style). The face is an anime face painted into a texture with numpy and laid on the head as a thin decal.
+  - Round (spherical) normals on the head and hair cap, plus a per-object shadow bias (`toon_shadow_bias`), keep faces lit the way anime draws them.
+  - `find_joints` on this character's geometry lands within 3–5 % of its true joints, so it doubles as a test figure for the auto-rig (`tests/test_rig.py`).
+- **HairDeck** ("Animation-Ready Stylized Hair Cards from a Single Image", Tsinghua/CMU/CUHK, arXiv 2610.40599), https://hyzcluster.github.io/HairDeck/. The owner shared it.
+  - Output: stylized hair cards plus spring-bone chains from one image, as GLB hair meshes and a VRM 0.x avatar.
+  - Licence: the weights are Apache-2.0 (`hyz317/HairDeck` on Hugging Face), and the model card has no region restriction. It fetches SAM 3, DINOv3 (TRELLIS.2 already uses DINOv3), BiRefNet-matting and Dora-VAE under their own licences.
+  - Needs Linux, Python 3.12 and a CUDA GPU, so Colab. The GitHub README (code licence, VRAM) timed out on 2026-11-08 and is still unread.
+  - **The plan:** generate the from-scratch character's hair from the Anima image with HairDeck, and turn its spring chains into Blender bones for swinging hair. This means running the repo's code on Colab, which needs the owner's approval.
+
 ## Colab Pro
 - L4 (24 GB) ≈ 1.7–2 CU/h; A100 ≈ 11–15 CU/h; Pro = 100 CU/month. GPU type is not guaranteed.
 

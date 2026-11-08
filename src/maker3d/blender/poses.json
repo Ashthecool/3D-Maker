@@ -1,0 +1,195 @@
+{
+  "rest": {
+
+  },
+  "t_pose": {
+    "upper_arm.L": {"raise": 90},
+    "upper_arm.R": {"raise": 90}
+  },
+  "relaxed": {
+    "upper_arm.L": {"raise": 14, "forward": 4},
+    "upper_arm.R": {"raise": 14, "forward": 4},
+    "forearm.L": {"bend": 14},
+    "forearm.R": {"bend": 14},
+    "hand.L": {"bend": 6},
+    "hand.R": {"bend": 6}
+  },
+  "idle": [
+    "relaxed",
+    {
+      "torso": {"move": [0.012, 0, -0.004]},
+      "hips": {"lean": 3},
+      "chest": {"lean": -3},
+      "head": {"lean": 4, "turn": 5}
+    }
+  ],
+  "cheer": {
+    "upper_arm.L": {"raise": 165, "forward": 12},
+    "upper_arm.R": {"raise": 165, "forward": 12},
+    "shoulder.L": {"raise": 12},
+    "shoulder.R": {"raise": 12},
+    "forearm.L": {"bend": 15},
+    "forearm.R": {"bend": 15},
+    "chest": {"bend": -6},
+    "head": {"bend": -12}
+  },
+  "victory": [
+    "relaxed",
+    {
+      "upper_arm.R": {"raise": 165, "forward": 10},
+      "shoulder.R": {"raise": 12},
+      "forearm.R": {"bend": 25},
+      "upper_arm.L": {"raise": 30, "forward": -10},
+      "forearm.L": {"bend": 95, "twist": -20},
+      "hand.L": {"bend": -15},
+      "chest": {"lean": 4, "bend": -3},
+      "head": {"lean": -6, "bend": -6}
+    }
+  ],
+  "wave_out": [
+    "idle",
+    {
+      "upper_arm.R": {"raise": 98, "forward": 18, "twist": -90},
+      "shoulder.R": {"raise": 6},
+      "forearm.R": {"bend": 62},
+      "hand.R": {"side": 12},
+      "head": {"lean": -6, "turn": 6}
+    }
+  ],
+  "wave_in": [
+    "idle",
+    {
+      "upper_arm.R": {"raise": 98, "forward": 18, "twist": -90},
+      "shoulder.R": {"raise": 6},
+      "forearm.R": {"bend": 102},
+      "hand.R": {"side": -12},
+      "head": {"lean": -6, "turn": 6}
+    }
+  ],
+  "hands_on_hips": [
+    "idle",
+    {
+      "upper_arm.L": {"raise": 42, "forward": -18},
+      "upper_arm.R": {"raise": 42, "forward": -18},
+      "forearm.L": {"bend": 105, "twist": 10},
+      "forearm.R": {"bend": 105, "twist": 10},
+      "hand.L": {"bend": -20},
+      "hand.R": {"bend": -20},
+      "chest": {"bend": -4}
+    }
+  ],
+  "think": [
+    "relaxed",
+    {
+      "upper_arm.R": {"raise": 22, "forward": 40},
+      "forearm.R": {"bend": 130, "twist": -30},
+      "hand.R": {"bend": -20},
+      "upper_arm.L": {"raise": 18, "forward": 35},
+      "forearm.L": {"bend": 85, "twist": -20},
+      "head": {"lean": 10, "bend": 8, "turn": -8},
+      "hips": {"lean": -3}
+    }
+  ],
+  "point": [
+    "idle",
+    {
+      "upper_arm.R": {"raise": 70, "forward": 75},
+      "forearm.R": {"bend": 5},
+      "chest": {"turn": 10},
+      "head": {"turn": -5, "bend": 3}
+    }
+  ],
+  "bow": [
+    "relaxed",
+    {
+      "spine": {"bend": 15},
+      "chest": {"bend": 15},
+      "head": {"bend": 10},
+      "upper_arm.L": {"raise": 6, "forward": 15},
+      "upper_arm.R": {"raise": 6, "forward": 15},
+      "torso": {"move": [0, -0.02, 0]}
+    }
+  ],
+  "crouch": [
+    "relaxed",
+    {
+      "torso": {"move": [0, -0.01, -0.09]},
+      "spine": {"bend": 12},
+      "chest": {"bend": 6},
+      "head": {"bend": -12},
+      "upper_arm.L": {"raise": 25, "forward": -25},
+      "upper_arm.R": {"raise": 25, "forward": -25},
+      "forearm.L": {"bend": 30},
+      "forearm.R": {"bend": 30}
+    }
+  ],
+  "jump": {
+    "root": {"move": [0, 0, 0.16]},
+    "torso": {"move": [0, 0, 0.01]},
+    "foot_ik.L": {"move": [0, -0.03, 0.07], "point": 35},
+    "foot_ik.R": {"move": [0, 0.02, 0.1], "point": 30},
+    "upper_arm.L": {"raise": 160, "forward": 15},
+    "upper_arm.R": {"raise": 150, "forward": 25},
+    "forearm.L": {"bend": 20},
+    "forearm.R": {"bend": 35},
+    "chest": {"bend": -8},
+    "head": {"bend": -10}
+  },
+  "kick": [
+    "relaxed",
+    {
+      "ik_leg.R": 0,
+      "thigh.R": {"forward": 85},
+      "shin.R": {"bend": 15},
+      "foot.R": {"point": 20},
+      "torso": {"move": [-0.015, 0.0, 0.0]},
+      "spine": {"bend": -10, "lean": -4},
+      "upper_arm.L": {"raise": 60, "forward": 30},
+      "forearm.L": {"bend": 60},
+      "upper_arm.R": {"raise": 50, "forward": -40},
+      "forearm.R": {"bend": 40}
+    }
+  ],
+  "walk_contact": {
+    "foot_ik.L": {"move": [0, 0.075, 0], "point": -12},
+    "foot_ik.R": {"move": [0, -0.07, 0.018], "point": 28},
+    "torso": {"move": [0, 0, -0.014]},
+    "hips": {"turn": -7},
+    "chest": {"turn": 8, "bend": 3},
+    "head": {"turn": -2},
+    "upper_arm.L": {"raise": 13, "forward": -22},
+    "upper_arm.R": {"raise": 13, "forward": 28},
+    "forearm.L": {"bend": 15},
+    "forearm.R": {"bend": 35}
+  },
+  "walk_pass": {
+    "foot_ik.L": {"move": [0, -0.005, 0]},
+    "foot_ik.R": {"move": [0, 0.01, 0.055], "point": 12},
+    "torso": {"move": [0, 0, 0.004]},
+    "chest": {"bend": 3},
+    "upper_arm.L": {"raise": 13, "forward": 2},
+    "upper_arm.R": {"raise": 13, "forward": 2},
+    "forearm.L": {"bend": 22},
+    "forearm.R": {"bend": 22}
+  },
+  "dance_a": {
+    "torso": {"move": [0.025, 0, -0.012]},
+    "hips": {"lean": 9, "turn": 6},
+    "chest": {"lean": -12, "turn": -8},
+    "head": {"lean": -10, "turn": 8},
+    "foot_ik.R": {"move": [-0.02, 0.02, 0.03], "point": 20},
+    "upper_arm.L": {"raise": 120, "forward": 25},
+    "forearm.L": {"bend": 95, "twist": -30},
+    "upper_arm.R": {"raise": 35, "forward": 20},
+    "forearm.R": {"bend": 80}
+  },
+  "dance_b": {
+    "torso": {"move": [0, 0, -0.035]},
+    "spine": {"bend": 8},
+    "head": {"bend": 6},
+    "upper_arm.L": {"raise": 60, "forward": 40},
+    "upper_arm.R": {"raise": 60, "forward": 40},
+    "forearm.L": {"bend": 100},
+    "forearm.R": {"bend": 100}
+  }
+}

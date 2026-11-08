@@ -13,6 +13,7 @@ middle of a stage resumes at that stage. Re-running a stage resets the stages af
     python -m maker3d.pipeline "1girl, red jacket, black shorts" --seed 2 --pick 2
     python -m maker3d.pipeline --resume latest
     python -m maker3d.pipeline --resume latest --redo toon --style flat
+    python -m maker3d.pipeline --character out/girl --animations wave,jump
 """
 
 from __future__ import annotations
@@ -41,6 +42,8 @@ from maker3d.workflows import Trellis2Settings
 
 STAGES = ("images", "pick", "model", "toon")
 TOON_SCRIPT = Path(__file__).parent / "blender" / "toon_scene.py"
+CHARACTER_SCRIPT = Path(__file__).parent / "blender" / "character.py"
+DEFAULT_ANIMATIONS = "idle,wave,walk,jump,cheer,dance"
 LOCAL_JOBS_DIR = Path("/content/jobs")
 WORK_DIR = Path("/content/work")
 WARM_LOG = Path("/content/blender_warm.log")  # written by setup_colab.sh
@@ -72,6 +75,10 @@ class ToonSettings:
     normal_smooth: float = 0.02  # blur shading normals for cleaner shadows; 0 = off (#23)
     projection: bool = True  # put the crisp Anima image on front-facing surfaces
     color_match: bool = True  # recolour TRELLIS.2's darker texture to the image (#24)
+    rig: bool = False  # add a skeleton: poses and animations (#19)
+    parts: bool = False  # with rig: one object per body part
+    pose: str = ""  # pose for the stills, from blender/poses.json
+    animations: str = ""  # comma-separated names from blender/animations/ (needs rig)
 
     def to_args(
         self, glb: Path, out: Path, image: Path | None = None, mask: Path | None = None
@@ -85,6 +92,14 @@ class ToonSettings:
         args += ["--outline", str(self.outline)] if self.outline > 0 else ["--no-outline"]
         if not self.turntable:
             args.append("--no-turntable")
+        if self.rig:
+            args.append("--rig")
+            if self.parts:
+                args.append("--parts")
+            if self.pose:
+                args += ["--pose", self.pose]
+            if self.animations:
+                args += ["--animations", self.animations]
         if self.transparent:
             args.append("--transparent")
         if self.projection and image is not None and image.is_file():
@@ -195,6 +210,10 @@ class Job:
     stills_dir = property(lambda self: self.dir / "stills")
     turntable = property(lambda self: self.dir / "turntable.mp4")
     blend = property(lambda self: self.dir / "toon.blend")
+    animations_dir = property(lambda self: self.dir / "animations")
+
+    def animations(self) -> list[Path]:
+        return sorted(self.animations_dir.glob("*.mp4"))
 
     def stills(self) -> list[Path]:
         order = ("front", "three_quarter", "side", "back")
@@ -206,7 +225,7 @@ class Job:
     def deliverables(self) -> list[Path]:
         """What goes in the download zip."""
         files = [self.dir / self.FILE, self.image, self.mask, self.model, self.blend]
-        files += [self.turntable, *self.stills()]
+        files += [self.turntable, *self.stills(), *self.animations()]
         return [p for p in files if p.is_file()]
 
     # --- settings ---------------------------------------------------------------------
@@ -290,6 +309,38 @@ def explain_error(stage: str, exc: BaseException) -> BaseException:
             f"{stage}: the GPU ran out of memory. Try again with {OOM_HINTS[stage]}. ({text})"
         )
     return exc
+
+
+def character_cmd(
+    out: Path,
+    spec: Path | None = None,
+    animations: str = DEFAULT_ANIMATIONS,
+    blender: str | None = None,
+    extra: Sequence[str] = (),
+) -> list[str]:
+    """Blender command that builds the from-scratch character (blender/character.py)."""
+    exe = blender or shutil.which("blender") or f"{BLENDER_DIR}/blender"
+    cmd = [exe, "-b", "--factory-startup", "--python-exit-code", "1", "-P", str(CHARACTER_SCRIPT)]
+    cmd += ["--", "--out", str(out)]
+    if spec is not None:
+        cmd += ["--spec", str(spec)]
+    if animations:
+        cmd += ["--animations", animations]
+    return cmd + list(extra)
+
+
+def make_character(out: str | Path, log: Log = print, timeout: float = 3600, **kwargs) -> Path:
+    """Build, pose and render the from-scratch character into ``out``; returns its .blend.
+
+    ``kwargs`` go to character_cmd (spec, animations, blender, extra).
+    """
+    out = Path(out).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    cmd = character_cmd(out, **kwargs)
+    log("[character] building the character in Blender")
+    on_line = lambda line: log(line) if line.startswith(("[toon]", "[rig]")) else None  # noqa: E731
+    run_logged(cmd, out / "blender.log", on_line=on_line, timeout=timeout)
+    return out / "character.blend"
 
 
 def default_blender_cmd() -> list[str]:
@@ -529,6 +580,12 @@ class Pipeline:
             job.turntable.unlink(missing_ok=True)
             if (work / "turntable.mp4").is_file():
                 shutil.copyfile(work / "turntable.mp4", job.turntable)
+            shutil.rmtree(job.animations_dir, ignore_errors=True)
+            videos = sorted((work / "animations").glob("*.mp4"))
+            if videos:
+                job.animations_dir.mkdir()
+                for video in videos:
+                    shutil.copyfile(video, job.animations_dir / video.name)
             tmp = job.dir / "toon.blend.tmp"
             shutil.copyfile(work / "toon.blend", tmp)
             tmp.replace(job.blend)
@@ -567,7 +624,7 @@ def _resolve(resume: str, jobs_dir: str | None) -> Job:
     return Job.load(resume)
 
 
-def main(argv: list[str] | None = None) -> Job:
+def main(argv: list[str] | None = None) -> Job | None:
     p = argparse.ArgumentParser(description="Prompt -> anime image -> 3D model -> toon render")
     p.add_argument("subject", nargs="?", help="character description (Danbooru tags or text)")
     p.add_argument("--resume", metavar="JOB", help="job folder, job.json or 'latest'")
@@ -579,7 +636,24 @@ def main(argv: list[str] | None = None) -> Job:
     p.add_argument("--style", choices=("flat", "cel", "cel_rim"))
     p.add_argument("--jobs-dir", help=f"default: {DRIVE_JOBS_DIR} if Drive is mounted")
     p.add_argument("--zip", action="store_true", help="also write a zip of the results")
+    p.add_argument(
+        "--character", metavar="DIR", help="build the from-scratch toon character into DIR"
+    )
+    p.add_argument("--spec", type=Path, help="with --character: JSON of colours and shape")
+    p.add_argument("--animations", default=DEFAULT_ANIMATIONS, help="with --character")
+    p.add_argument("--blender", help="path to the blender executable")
     args = p.parse_args(argv)
+    if args.character:
+        log = lambda m: print(m, flush=True)  # noqa: E731
+        blend = make_character(
+            args.character,
+            log=log,
+            spec=args.spec,
+            animations=args.animations,
+            blender=args.blender,
+        )
+        print(f"done: {blend}", flush=True)
+        return None
     if bool(args.subject) == bool(args.resume):
         p.error("give a subject or --resume, not both")
 

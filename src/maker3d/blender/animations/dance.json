@@ -1,0 +1,12 @@
+{
+  "description": "A bouncy side-to-side dance groove.",
+  "frames": 48,
+  "loop": true,
+  "hold": 2,
+  "keys": [
+    {"frame": 1, "pose": "dance_a"},
+    {"frame": 13, "pose": "dance_b"},
+    {"frame": 25, "pose": "mirror:dance_a"},
+    {"frame": 37, "pose": "dance_b"}
+  ]
+}
