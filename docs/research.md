@@ -52,6 +52,54 @@ What this pipeline can automate (it has no hand-authored data):
 - Optional Freestyle lines for creases. Freestyle is CPU-based, so it works with headless Cycles. Grease Pencil Line Art needs the GPU draw engine, like EEVEE.
 - The Anima image's own line art already survives into the TRELLIS.2 texture bake.
 
+## Body parts and extra views (2026-11-08)
+The question: would splitting the character into body parts, and texturing each part separately, fix what goes wrong when TRELLIS.2 does everything in one pass? The problems are skin colour on the back of the head, dark and smudged backs, and colours bleeding from one part into the next. Test characters: the girl and boy jobs from 2026-11-07. Scripts and renders stayed in the session scratchpad.
+
+### Generating each part as its own mesh
+| Model | Built on | Textured | Licence / EU | Status (2026-11-08) |
+|---|---|---|---|---|
+| KaiNinja (Alaya Lab, arXiv 2609.15659) | TRELLIS.2 | yes (TRELLIS.2 materials) | MIT weights, not gated | Weights out 2026-10-23, inference code not yet. Parts come out automatically (no masks); about 24 s per object on an H100. **The one to watch.** |
+| OmniPart (HKU, SIGGRAPH Asia 2025) | TRELLIS v1 | yes | MIT | Needs a 2D part mask. Lower resolution than TRELLIS.2, own CUDA stack, community ComfyUI node only. |
+| StdGEN (CVPR 2025) | own multi-view model + LRM | yes | Apache-2.0 code; checkpoints "for research purposes only" | Made for anime (separate body, clothes and hair), but old stack (torch 2.1, cu118) and lower texture quality. |
+| PartCrafter, PartPacker | TripoSG / own | no | MIT / NVIDIA licence | Geometry only. |
+| Hunyuan3D-Part (P3-SAM, X-Part) | Hunyuan3D | — | Tencent licence excludes the EU | **Not used.** |
+
+Splitting the geometry does not fix the texture by itself: each part is still textured from the one front image. Also, the native TRELLIS.2 nodes in ComfyUI v0.44.0 cannot texture a mesh you give them, because there is no node that encodes a mesh into a shape latent. The upstream repo has a texturing pipeline that can.
+
+### Texturing each part (tested)
+- **Parts in the 2D image:** See-through's body-part parser (SIGGRAPH 2026). It is SAM-HQ ViT-H fine-tuned on anime, with 19 classes. Weights `24yearsold/l2d_sam_iter2` (1.3 GB, Apache-2.0, not gated); about 20 s per image on a CPU.
+  - Clean results on both test images for hair, face, eyes, jacket body, shorts, legs and shoes.
+  - Its "handwear" class covers sleeves and hands together; bare thighs and boots can land in "legwear".
+  - The alternative, SAM 3.1 with text prompts, is native in ComfyUI (`SAM3_Detect`; `Comfy-Org/sam3.1` is not gated, and the SAM licence covers the EEA). Not tested on anime.
+- **Labels onto the mesh:** the colour match's bilateral grid (x/z position plus TRELLIS colour) carries the labels over well.
+  - A walk along the surface (each vertex takes the nearest labelled point) leaks wherever TRELLIS.2 fuses parts together: jacket into the back hair, sleeves onto the torso.
+  - One rule helps: a face is only on surfaces that point forward. That removes the skin colour on the back of the boy's head.
+- **Colours per part:** stops colours bleeding between parts, but 8 colours per part make flat areas blotchy. Use fewer colours per part.
+
+### Other angles of the same character (tested)
+- **IP-Adapters for Anima** (community):
+  - Anima Ref Adapter v2: ArcAnima node (Apache-2.0) plus ElectronGirl weights (CircleStone non-commercial). Trained on Anima base v1.0; a turbo LoRA works; the full Turbo model is untested.
+  - Also LuciferTC's and Wenaka2004's IP-Adapters.
+  - Not tested yet: installing a custom node on Colab was not approved in this session.
+- **Native, tested: in-context outpainting.**
+  - Setup: the picked image goes on the left half of a 1664×1216 canvas, with `SetLatentNoiseMask` on the right half. Prompt: "reference sheet, multiple views, two views, front view and back view, from behind".
+  - Result: the same character in 4 of 4 seeds for both test characters, 12–15 s per batch of 4 on an A100 with Anima Turbo v1.1.
+  - Colours the prompt leaves open can drift: black boots instead of red, red trim on white sneakers.
+- **Projecting the back view onto the back of the mesh** (like the front projection, with the model turned 180°):
+  - The best of the 4 back views fits the mesh silhouette with IoU 0.80–0.85, so it can be picked automatically.
+  - It brings drawn hair strands, seams and folds to the back.
+  - Problems: the colour drift above, and misalignment at the silhouette edges.
+- **Turnaround sheet from text alone:** draws a new character each time, so it is not useful for a picked image.
+
+![Back of the model: part labels, colours per part, and a generated back view projected onto the back](img/parts-and-back-view.jpg)
+
+### Plan
+1. Back view by in-context outpainting (native nodes); keep the best of 4 by silhouette IoU and project it onto back-facing surfaces (#18).
+2. Part labels for the front image and the back view. Snap each part's colours in the back view to the front image's palette for that part (fixes the drift), and use per-part palettes for the sides.
+3. Watch for KaiNinja's inference code, which would give separate meshes for hair and clothes.
+
+Found on the way: `toon_scene.py --yaw` did not turn the model for the projection, because glTF imports use quaternion rotation. Fixed by turning the world matrix.
+
 ## Colab Pro
 - L4 (24 GB) ≈ 1.7–2 CU/h; A100 ≈ 11–15 CU/h; Pro = 100 CU/month. GPU type is not guaranteed.
 

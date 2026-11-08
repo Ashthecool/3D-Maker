@@ -568,7 +568,7 @@ def turntable_keys(frames: int, hold: int = 2, ease: float = 0.0) -> list[tuple[
 # --------------------------------------------------------------------------------------
 def main(argv: list[str]) -> None:
     import bpy
-    from mathutils import Vector
+    from mathutils import Matrix, Vector
 
     args = parse_args(argv)
     out = args.out.resolve()
@@ -585,9 +585,12 @@ def main(argv: list[str]) -> None:
     smoothed = add_smooth_normals(meshes, args.normal_smooth)
     proj_image, color_matched = None, False
     if args.source_image:
-        rotate_yaw = math.radians(args.yaw)
-        for o in [o for o in scene.objects if o.parent is None]:
-            o.rotation_euler.z += rotate_yaw  # project in the pose the camera sees at yaw
+        # Project in the pose the camera sees at yaw. glTF imports use quaternion rotation,
+        # so turn the world matrix: changing rotation_euler would do nothing.
+        turn = Matrix.Rotation(math.radians(args.yaw), 4, "Z")
+        roots = [o for o in scene.objects if o.parent is None]
+        for o in roots:
+            o.matrix_world = turn @ o.matrix_world
         bpy.context.view_layer.update()
         proj_image, color_matched = add_front_projection(
             bpy,
@@ -596,8 +599,8 @@ def main(argv: list[str]) -> None:
             args.source_mask,
             color_match=not args.no_color_match,
         )
-        for o in [o for o in scene.objects if o.parent is None]:
-            o.rotation_euler.z -= rotate_yaw
+        for o in roots:
+            o.matrix_world = turn.inverted() @ o.matrix_world
         bpy.context.view_layer.update()
 
     # Pivot empty: everything rotates around the model's vertical axis.
